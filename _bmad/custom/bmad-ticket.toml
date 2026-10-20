@@ -4,7 +4,5 @@
 publication = "at_inception"
 
 persistent_facts = [
-  "Tracker is GitHub Issues on zhmachenkov-d/earn-green.specs (ticketing-store-config.toml). Never publish tickets to the earn-green product remote.",
-  "Specs, stories, and build plans that change product code must name project earn-green (AD-14).",
-  "file:_bmad-output/initiative-test-inspector/architecture-test-inspector/architecture-test-inspector.md",
+  "Tracker is GitHub Issues on zhmachenkov-d/lingua.ai (ticketing-store-config.toml). Publish tickets only to that repo.",
 ]
