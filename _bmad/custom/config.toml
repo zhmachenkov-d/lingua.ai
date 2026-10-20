@@ -1,0 +1,6 @@
+# Team pins (committed). See:
+# https://github.com/bmad-code-org/BMAD-METHOD/blob/main/docs/customize/adopt-bmad-across-a-team.md
+# Recipe 5c — pin team install settings.
+
+[core]
+document_output_language = "English"

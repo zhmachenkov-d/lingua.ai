@@ -1,0 +1,7 @@
+# Ticket store: GitHub Issues on this repo.
+# Layers over .agents/skills/bmad-agent-po/config/github-ticketing.toml
+
+[tickets]
+store = "github"
+key = ""
+repo = "zhmachenkov-d/lingua.ai"

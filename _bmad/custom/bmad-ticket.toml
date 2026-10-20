@@ -1,0 +1,8 @@
+# Team overrides for bmad-ticket (committed).
+
+[workflow]
+publication = "at_inception"
+
+persistent_facts = [
+  "Tracker is GitHub Issues on zhmachenkov-d/lingua.ai (ticketing-store-config.toml). Publish tickets only to that repo.",
+]
