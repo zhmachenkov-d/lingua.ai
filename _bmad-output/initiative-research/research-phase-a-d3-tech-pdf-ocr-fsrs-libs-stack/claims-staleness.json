@@ -1,0 +1,47 @@
+[
+  {
+    "claim": "marker-pdf 2.0.0",
+    "class": "version",
+    "pub_date": "2025-07"
+  },
+  {
+    "claim": "fsrs 6.3.2",
+    "class": "version",
+    "pub_date": "2026-08"
+  },
+  {
+    "claim": "Google OCR pricing",
+    "class": "pricing",
+    "pub_date": "2026-10"
+  },
+  {
+    "claim": "OpenAI pricing",
+    "class": "pricing",
+    "pub_date": "2026-10"
+  },
+  {
+    "claim": "Oxford from 50 GBP",
+    "class": "pricing",
+    "pub_date": "2025-01"
+  },
+  {
+    "claim": "Pinecone floors",
+    "class": "pricing",
+    "pub_date": "2026-10"
+  },
+  {
+    "claim": "Dify compose footprint",
+    "class": "ecosystem",
+    "pub_date": "2026-10"
+  },
+  {
+    "claim": "Thoughtworks LangGraph Trial",
+    "class": "landscape",
+    "pub_date": "2026-04"
+  },
+  {
+    "claim": "Postgres JSONB",
+    "class": "patterns",
+    "pub_date": "2026-10"
+  }
+]
