@@ -9,7 +9,7 @@ hitl: true
 risk: medium
 tracker_id: "5"
 remote: "https://github.com/zhmachenkov-d/lingua.ai/issues/5"
-tracker_status: backlog
+tracker_status: done
 ---
 
 # Mastery and error-frequency thresholds
