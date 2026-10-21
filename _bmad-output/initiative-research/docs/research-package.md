@@ -44,4 +44,4 @@ _Placeholder_
 
 ## 10. Приложения
 
-_Placeholder_
+- R19 thresholds (Learned badge S/k + FR-23 frequency): [`r19-mastery-and-error-thresholds.md`](./r19-mastery-and-error-thresholds.md)
