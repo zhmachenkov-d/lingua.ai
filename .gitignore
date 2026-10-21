@@ -2,7 +2,7 @@
 .env
 
 # Generated BMAD output
-# _bmad-output/
+_bmad-output/
 _bmad/render/
 
 # Local textbooks
