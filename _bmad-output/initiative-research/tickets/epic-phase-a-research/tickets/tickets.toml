@@ -1,0 +1,89 @@
+# Phase A research package — entries in build order.
+
+[[entry]]
+id = 1
+type = "story"
+title = "Research package document skeleton"
+description = "Creates the shared Russian research-package.md with §0–§10 headings and D1–D3 placeholders so later sections land in one file."
+verify = "File exists at _bmad-output/initiative-research/docs/research-package.md with sections 0–10 and empty D1–D3 slots; owner confirms structure."
+covers = ["R12"]
+after = []
+hitl = true
+risk = "low"
+
+[[entry]]
+id = 2
+type = "spike"
+title = "Mastery and error-frequency thresholds"
+description = "Decides exact Learned-badge thresholds (stability floor + last k successful retrievals / modalities) and the frequent-error frequency threshold for Teacher notify (FR-23), recorded for D1 to cite."
+verify = "A short note in the package or companion states S/k (or equivalent) and the error-frequency rule; owner accepts the numbers."
+covers = ["R19"]
+after = [1]
+hitl = true
+risk = "medium"
+
+[[entry]]
+id = 3
+type = "story"
+title = "D1 SLA/ISLA practices table"
+description = "Fills D1 Practice → principle → agent → metric for the brief practice list, citing sources and R19 thresholds, aligned with PRD §6.3."
+verify = "D1 table meets R3 acceptance: each listed practice has source, component, and metric; FSRS/Learned and remediation match §6.3."
+covers = ["R3", "R1", "R19"]
+after = [2]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 4
+type = "story"
+title = "D2 competitive analysis"
+description = "Fills D2 for ≥8 products with strengths, weaknesses, borrow/avoid, applicable/not, reflecting PRD §6.5."
+verify = "D2 has ≥8 product rows including the brief set; white space / borrow / avoid match §6.5."
+covers = ["R4"]
+after = [3]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 8
+type = "spike"
+title = "RU LLM quality scorecard"
+description = "Runs a mini scorecard (RU UI explanations + EN pedagogy prompts) across OpenAI mini/nano, Anthropic Haiku/Sonnet, and Gemini Flash-Lite; owner picks Phase A/MVP primary LLM (and runner-up) for D3 to cite."
+verify = "Scorecard note names primary and runner-up with brief rationale; owner accepts the pick."
+covers = ["R20"]
+after = [4]
+hitl = true
+risk = "medium"
+
+[[entry]]
+id = 5
+type = "story"
+title = "D3 tech research table"
+description = "Fills D3 stack/API table with trade-offs: Free Dictionary primary, Oxford runner-up + license gate, Marker + Poor-quality gate, fsrs, baseline R15–R17, LLM row cites R20 primary/runner-up."
+verify = "D3 meets R5 and R15–R18; LLM/dictionary/OCR/FSRS rows match §6.4, Free Dictionary primary, and R20 pick."
+covers = ["R5", "R15", "R16", "R17", "R18", "R20"]
+after = [8]
+hitl = false
+risk = "medium"
+
+[[entry]]
+id = 6
+type = "story"
+title = "Phase A consistency pass"
+description = "Aligns D1↔D2↔D3 terminology and decisions, removes empty filler, and checks tone before review mark."
+verify = "No contradictions across D1–D3 on algorithms, lexicon, LLM, or OCR; unused placeholders called out or filled."
+covers = ["R1", "R3", "R4", "R5"]
+after = [3, 4, 5]
+hitl = false
+risk = "low"
+
+[[entry]]
+id = 7
+type = "story"
+title = "Phase A review HITL"
+description = "Marks the package «Фаза A — на ревью», completes self-review, and records owner go/no-go before Phase B."
+verify = "Document shows «Фаза A — на ревью» with sections 1–3 filled; owner confirmation (or reject) is recorded."
+covers = ["R12"]
+after = [6]
+hitl = true
+risk = "low"
