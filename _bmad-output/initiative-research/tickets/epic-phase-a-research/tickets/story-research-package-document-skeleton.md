@@ -9,7 +9,7 @@ hitl: true
 risk: low
 tracker_id: "4"
 remote: "https://github.com/zhmachenkov-d/lingua.ai/issues/4"
-tracker_status: backlog
+tracker_status: done
 ---
 
 # Research package document skeleton
