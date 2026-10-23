@@ -139,6 +139,12 @@
       "skillPath": "skills/bmad-qa-generate-e2e-tests/SKILL.md",
       "computedHash": "79fb9e60c96664e15539bdd853738da2fac80d7f9f982b343a74568ca3ff5ef2"
     },
+    "bmad-retrospective": {
+      "source": "bmad-code-org/BMAD-METHOD",
+      "sourceType": "github",
+      "computedHash": "f420d05434645aac2b3cb4af670a165047a9d191c3a2a195b5afbd23808252cf",
+      "skillPath": "skills/bmad-retrospective/SKILL.md"
+    },
     "bmad-review": {
       "source": "bmad-code-org/BMAD-METHOD",
       "sourceType": "github",
