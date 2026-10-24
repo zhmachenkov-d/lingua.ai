@@ -7,3 +7,14 @@ _bmad/render/
 
 # Local textbooks
 textbooks/
+
+# App scaffolds
+**/__pycache__/
+**/*.py[cod]
+**/node_modules/
+**/.angular/
+**/dist/
+**/build/
+*.egg-info/
+.venv/
+.dockerd.log
