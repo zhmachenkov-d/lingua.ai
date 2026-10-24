@@ -26,11 +26,21 @@ class ReviewRecord(Base):
     learner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("learner_profile.id"))
     vocab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("vocabulary_item.id"))
     rating: Mapped[str] = mapped_column(
-        Enum(*RATINGS, name="review_record_rating", native_enum=False, create_constraint=True)
+        Enum(
+            *RATINGS,
+            name="review_record_rating",
+            native_enum=False,
+            create_constraint=True,
+        )
     )
     success: Mapped[bool] = mapped_column(Boolean)
     drill_modality: Mapped[str] = mapped_column(
-        Enum(*DRILL_MODALITIES, name="review_record_drill_modality", native_enum=False, create_constraint=True)
+        Enum(
+            *DRILL_MODALITIES,
+            name="review_record_drill_modality",
+            native_enum=False,
+            create_constraint=True,
+        )
     )
     reviewed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -42,6 +52,4 @@ class ReviewRecord(Base):
     error_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("error_log.id"))
     stability_after: Mapped[float | None] = mapped_column(Float)
     difficulty_after: Mapped[float | None] = mapped_column(Float)
-    next_review_after: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
+    next_review_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

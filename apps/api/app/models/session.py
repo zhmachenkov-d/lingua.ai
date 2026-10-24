@@ -30,7 +30,12 @@ class Session(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     learner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("learner_profile.id"))
     active_agent: Mapped[str] = mapped_column(
-        Enum(*ACTIVE_AGENTS, name="session_active_agent", native_enum=False, create_constraint=True)
+        Enum(
+            *ACTIVE_AGENTS,
+            name="session_active_agent",
+            native_enum=False,
+            create_constraint=True,
+        )
     )
     touched_lemmas: Mapped[list[str]] = mapped_column(
         ARRAY(Text), server_default=text("'{}'::text[]")
@@ -39,7 +44,12 @@ class Session(Base):
         ARRAY(Text), server_default=text("'{}'::text[]")
     )
     tblt_phase: Mapped[str | None] = mapped_column(
-        Enum(*TBLT_PHASES, name="session_tblt_phase", native_enum=False, create_constraint=True)
+        Enum(
+            *TBLT_PHASES,
+            name="session_tblt_phase",
+            native_enum=False,
+            create_constraint=True,
+        )
     )
     drafts: Mapped[dict[str, Any]] = mapped_column(
         JSONB, server_default=text("'{}'::jsonb")

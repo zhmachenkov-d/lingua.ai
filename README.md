@@ -79,7 +79,34 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 **Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9).
 
-Tests: `cd apps/api && pip install -e '.[dev]' && DATABASE_URL=postgresql://… pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** (the skip reason says they are not verified); plain `pytest` still runs `/health` (lifespan + mocked bootstrap) and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
+Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` (lifespan + mocked bootstrap) and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
+
+### Quality gates
+
+Local commands (no Docker required for lint/format/typecheck). Api uses **uv** against `apps/api/uv.lock`; web uses npm.
+
+**Api** (`apps/api`):
+
+```bash
+cd apps/api
+uv sync --extra dev
+uv run ruff check app
+uv run ruff format --check app
+uv run mypy
+```
+
+**Web** (`apps/web`):
+
+```bash
+cd apps/web
+npm ci
+npm run lint
+npm run format:check
+npm run typecheck
+npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
+```
+
+**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
 
 ### Ingest job stub
 
