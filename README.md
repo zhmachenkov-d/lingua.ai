@@ -42,8 +42,6 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 
 Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). The `web-dev` profile (`ng serve`) does not include that proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
 
-Compose pins service IPs and `extra_hosts` so `db` / `api` resolve even when Docker’s embedded DNS (`127.0.0.11`) is unavailable (common with nested Docker + `iptables: false`).
-
 Default Compose `web` serves a **production** static build (nginx). Source edits under `apps/web` are not visible until you rebuild the image.
 
 For Angular HMR against the same localhost port:

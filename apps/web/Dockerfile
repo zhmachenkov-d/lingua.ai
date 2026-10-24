@@ -15,7 +15,7 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine AS web
 
 USER root
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# Stub upstream name for config test; Compose injects real `api` via extra_hosts at run.
+# Stub upstream name for `nginx -t` at image build; at run Compose DNS resolves `api`.
 RUN printf '127.0.0.1 api\n' >> /etc/hosts \
   && nginx -t \
   && rm -f /tmp/nginx.pid
