@@ -24,6 +24,15 @@ docker compose up --build
 
 Default `up` starts `web`, `api`, and `db`. The `ingest` service is **not** started (Compose profile `ingest`).
 
+In a nested Docker / Dev Container environment, if Compose DNS cannot resolve service names (`api`, `db`), use the host-network stack instead (binds `127.0.0.1` only; no `ports:`). Prefer the classic builder so Bake does not block host networking:
+
+```bash
+docker compose down
+DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml up --build
+```
+
+Ingest / web-dev with that file: `docker compose -f compose.dev.yaml --profile ingest run --rm ingest` (and the same `-f` for `--profile web-dev`).
+
 If image builds fail to resolve PyPI/npm (common in nested Docker without iptables/NAT), rebuild with the classic builder so Compose `build.network: host` works:
 
 ```bash
@@ -64,9 +73,10 @@ docker compose --profile ingest run --rm ingest
 ## Layout
 
 ```text
-compose.yaml
+compose.yaml       # default bridge topology (service DNS + ports)
+compose.dev.yaml   # nested-Docker host-network alternative
 apps/
   api/      # FastAPI + GET /health
-  web/      # Angular 22.2.x default shell
+  web/      # Angular 22.2.x default shell (+ nginx.dev.conf for host stack)
   ingest/   # job-profile stub
 ```

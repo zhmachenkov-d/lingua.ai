@@ -1,0 +1,81 @@
+# Dev / nested-Docker Compose stack (host network).
+# Use when Compose embedded DNS (127.0.0.11) cannot resolve service names:
+#   docker compose -f compose.dev.yaml up --build
+#
+# Binds 127.0.0.1 only (4200/8000/5432). No `ports:` (incompatible with host
+# network). Default bridge topology stays in compose.yaml.
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    network_mode: host
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -h 127.0.0.1 -U $$POSTGRES_USER -d $$POSTGRES_DB",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./apps/api
+      network: host
+    network_mode: host
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+    command:
+      ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      network: host
+    network_mode: host
+    volumes:
+      - ./apps/web/nginx.dev.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test:
+        ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:4200/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    depends_on:
+      - api
+
+  # HMR / live reload — do not run with `web` (same host port 4200).
+  # Usage: docker compose -f compose.dev.yaml stop web && \
+  #        docker compose -f compose.dev.yaml --profile web-dev up web-dev
+  web-dev:
+    profiles: [web-dev]
+    image: node:22-bookworm
+    network_mode: host
+    working_dir: /app
+    volumes:
+      - ./apps/web:/app
+      - web_dev_node_modules:/app/node_modules
+    command: ["sh", "-c", "npm ci && npx ng serve --host 127.0.0.1 --port 4200"]
+
+  ingest:
+    profiles: [ingest]
+    build:
+      context: ./apps/ingest
+      network: host
+    network_mode: host
+
+volumes:
+  db_data:
+  web_dev_node_modules:
