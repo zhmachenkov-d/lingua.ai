@@ -66,12 +66,12 @@ Or on the host: `cd apps/web && npm start` (port 4200). Do not run `web` and `we
 
 On startup the `api` prepares the shared Postgres itself — no separate migration CLI. In one critical section (FastAPI lifespan, `app/db/bootstrap.py`):
 
-1. acquire Postgres advisory lock `7265300117001` (session-level, polled; waits at most **60 s**)
-2. `alembic upgrade head` — learner LTM (`LearnerProfile`, `VocabularyItem` incl. FSRS fields, `ReviewRecord`, `ErrorLog`) plus the `session` mirror table
-3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic)
+1. acquire Postgres advisory lock `7265300117001` (session-level, polled; waits at most **60 s**; connect uses a **10 s** TCP timeout and keepalives so the lock session stays up while Alembic uses a separate connection)
+2. `alembic upgrade head` — learner LTM (`LearnerProfile`, `VocabularyItem` incl. FSRS fields, `ReviewRecord`, `ErrorLog`) plus the `session` mirror table (bounded **120 s** under the lock)
+3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; also bounded **120 s**)
 4. release the lock
 
-Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If `DATABASE_URL` is missing, Postgres is unreachable, the lock wait times out, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
+Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If `DATABASE_URL` is missing, Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
 
 **Single-writer MVP:** one `api` replica is the migrator. The advisory lock serializes concurrent starts (the second waits, then re-runs the idempotent sequence), but multi-replica migration orchestration is out of scope. Alembic downgrade is out of scope.
 
@@ -79,7 +79,7 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 **Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9).
 
-Tests: `cd apps/api && pip install -e '.[dev]' && DATABASE_URL=postgresql://… pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** (the skip reason says they are not verified); plain `pytest` then only proves `/health`.
+Tests: `cd apps/api && pip install -e '.[dev]' && DATABASE_URL=postgresql://… pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** (the skip reason says they are not verified); plain `pytest` still runs `/health` (lifespan + mocked bootstrap) and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
 
 ### Ingest job stub
 

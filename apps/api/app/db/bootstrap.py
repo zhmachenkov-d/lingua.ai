@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 BOOTSTRAP_LOCK_KEY = 7_265_300_117_001
 LOCK_TIMEOUT_SECONDS = 60.0
 LOCK_POLL_SECONDS = 0.25
+CONNECT_TIMEOUT_SECONDS = 10
+# Bound work under the lock so a hung migrate/setup cannot pin peers forever.
+WORK_TIMEOUT_SECONDS = 120.0
 
 
 class BootstrapError(RuntimeError):
@@ -29,6 +32,10 @@ class BootstrapError(RuntimeError):
 
 
 class BootstrapLockTimeout(BootstrapError):
+    pass
+
+
+class BootstrapWorkTimeout(BootstrapError):
     pass
 
 
@@ -82,19 +89,47 @@ async def bootstrap(
     url = database_url or get_database_url()
     timeout = LOCK_TIMEOUT_SECONDS if lock_timeout is None else lock_timeout
     try:
-        conn = await psycopg.AsyncConnection.connect(url, autocommit=True)
+        # TCP keepalive keeps the lock session alive while Alembic uses a
+        # separate engine connection under the same critical section.
+        conn = await psycopg.AsyncConnection.connect(
+            url,
+            autocommit=True,
+            connect_timeout=CONNECT_TIMEOUT_SECONDS,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
+        )
     except psycopg.Error as exc:
-        raise BootstrapError(f"cannot connect to Postgres for bootstrap: {exc}") from exc
+        raise BootstrapError(
+            f"cannot connect to Postgres for bootstrap: {exc}"
+        ) from exc
     try:
         await _acquire_lock(conn, timeout)
         logger.info("bootstrap: lock acquired; running alembic upgrade head")
         try:
-            await run_alembic_upgrade(url)
+            await asyncio.wait_for(
+                run_alembic_upgrade(url), timeout=WORK_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            raise BootstrapWorkTimeout(
+                f"alembic upgrade exceeded {WORK_TIMEOUT_SECONDS:g}s under lock"
+            ) from exc
+        except BootstrapError:
+            raise
         except Exception as exc:
             raise BootstrapError(f"alembic upgrade failed: {exc}") from exc
         logger.info("bootstrap: running checkpointer setup")
         try:
-            await run_checkpointer_setup(url)
+            await asyncio.wait_for(
+                run_checkpointer_setup(url), timeout=WORK_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            raise BootstrapWorkTimeout(
+                f"checkpointer setup exceeded {WORK_TIMEOUT_SECONDS:g}s under lock"
+            ) from exc
+        except BootstrapError:
+            raise
         except Exception as exc:
             raise BootstrapError(f"checkpointer setup failed: {exc}") from exc
         logger.info("bootstrap: complete")

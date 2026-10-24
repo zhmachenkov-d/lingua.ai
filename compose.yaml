@@ -38,7 +38,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 12
-      start_period: 10s
+      # Exceed LOCK_TIMEOUT_SECONDS (60) + migrate/setup margin
+      start_period: 90s
     depends_on:
       db:
         condition: service_healthy

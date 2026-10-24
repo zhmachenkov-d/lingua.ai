@@ -9,6 +9,9 @@ them). `session` is a non-authoritative mirror — not STM SoT (AD-3).
 
 import sqlalchemy as sa
 from alembic import op
+from app.models.review_record import DRILL_MODALITIES, RATINGS
+from app.models.session import ACTIVE_AGENTS, TBLT_PHASES
+from app.models.vocabulary_item import LEXICON_PROVIDERS, SOURCES, STATUSES
 from sqlalchemy.dialects import postgresql as pg
 
 revision = "0001"
@@ -16,9 +19,7 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-UUID_PK = dict(
-    primary_key=True, server_default=sa.text("gen_random_uuid()")
-)
+UUID_PK = dict(primary_key=True, server_default=sa.text("gen_random_uuid()"))
 NOW = sa.text("now()")
 EMPTY_ARRAY = sa.text("'{}'::text[]")
 EMPTY_OBJ = sa.text("'{}'::jsonb")
@@ -37,7 +38,9 @@ def upgrade() -> None:
         "learner_profile",
         sa.Column("id", pg.UUID(as_uuid=True), **UUID_PK),
         sa.Column("cefr_by_skill", pg.JSONB, nullable=False, server_default=EMPTY_OBJ),
-        sa.Column("goals", pg.ARRAY(sa.Text), nullable=False, server_default=EMPTY_ARRAY),
+        sa.Column(
+            "goals", pg.ARRAY(sa.Text), nullable=False, server_default=EMPTY_ARRAY
+        ),
         sa.Column("constraints", pg.JSONB, nullable=False, server_default=EMPTY_OBJ),
         _ts("created_at", nullable=False, server_default=NOW),
         _ts("updated_at", nullable=False, server_default=NOW),
@@ -55,14 +58,24 @@ def upgrade() -> None:
         ),
         sa.Column(
             "active_agent",
-            _enum("session_active_agent", "Router", "Tutor", "Vocabulary", "Review"),
+            _enum("session_active_agent", *ACTIVE_AGENTS),
             nullable=False,
         ),
-        sa.Column("touched_lemmas", pg.ARRAY(sa.Text), nullable=False, server_default=EMPTY_ARRAY),
-        sa.Column("touched_rule_ids", pg.ARRAY(sa.Text), nullable=False, server_default=EMPTY_ARRAY),
+        sa.Column(
+            "touched_lemmas",
+            pg.ARRAY(sa.Text),
+            nullable=False,
+            server_default=EMPTY_ARRAY,
+        ),
+        sa.Column(
+            "touched_rule_ids",
+            pg.ARRAY(sa.Text),
+            nullable=False,
+            server_default=EMPTY_ARRAY,
+        ),
         sa.Column(
             "tblt_phase",
-            _enum("session_tblt_phase", "none", "pre", "main", "post"),
+            _enum("session_tblt_phase", *TBLT_PHASES),
             nullable=True,
         ),
         sa.Column("drafts", pg.JSONB, nullable=False, server_default=EMPTY_OBJ),
@@ -84,21 +97,19 @@ def upgrade() -> None:
         sa.Column("lemma", sa.Text, nullable=False),
         sa.Column(
             "source",
-            _enum("vocabulary_item_source", "textbook", "lexicon"),
+            _enum("vocabulary_item_source", *SOURCES),
             nullable=False,
         ),
         sa.Column(
             "lexicon_provider",
-            _enum("vocabulary_item_lexicon_provider", "free_dictionary", "oxford"),
+            _enum("vocabulary_item_lexicon_provider", *LEXICON_PROVIDERS),
             nullable=True,
         ),
         sa.Column("textbook_id", sa.Text, nullable=True),
         sa.Column("unit_ref", sa.Text, nullable=True),
         sa.Column(
             "status",
-            _enum(
-                "vocabulary_item_status", "Unseen", "Learning", "Review", "Mastered"
-            ),
+            _enum("vocabulary_item_status", *STATUSES),
             nullable=False,
         ),
         sa.Column("difficulty", sa.Float, nullable=True),
@@ -159,21 +170,13 @@ def upgrade() -> None:
         ),
         sa.Column(
             "rating",
-            _enum("review_record_rating", "Again", "Hard", "Good", "Easy"),
+            _enum("review_record_rating", *RATINGS),
             nullable=False,
         ),
         sa.Column("success", sa.Boolean, nullable=False),
         sa.Column(
             "drill_modality",
-            _enum(
-                "review_record_drill_modality",
-                "translate_en_ru",
-                "translate_ru_en",
-                "match",
-                "write",
-                "cloze",
-                "listen_and_spell",
-            ),
+            _enum("review_record_drill_modality", *DRILL_MODALITIES),
             nullable=False,
         ),
         _ts("reviewed_at", nullable=False, server_default=NOW),

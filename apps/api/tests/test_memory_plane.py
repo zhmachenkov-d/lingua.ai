@@ -1,18 +1,14 @@
 import asyncio
 import re
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
+import app.db.bootstrap as bootstrap_mod
 import psycopg
 import pytest
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
-from fastapi.testclient import TestClient
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from sqlalchemy import create_engine
-
-import app.db.bootstrap as bootstrap_mod
 from app.db.bootstrap import (
     BOOTSTRAP_LOCK_KEY,
     BootstrapError,
@@ -22,12 +18,13 @@ from app.db.bootstrap import (
 from app.db.config import DatabaseConfigError, get_database_url, to_sqlalchemy_url
 from app.main import app
 from app.models import Base, Session
-
-pytestmark = pytest.mark.integration_db
+from fastapi.testclient import TestClient
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from sqlalchemy import create_engine
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-NON_SOT = re.compile(r"non-authoritative", re.I)
-NOT_SOT = re.compile(r"not (?:the )?(?:source of truth|SoT)|not SoT", re.I)
+NON_SOT = re.compile(r"non-authoritative", re.IGNORECASE)
+NOT_SOT = re.compile(r"not (?:the )?(?:source of truth|SoT)|not SoT", re.IGNORECASE)
 
 LTM_TABLES = {
     "learner_profile",
@@ -44,24 +41,70 @@ CHECKPOINT_TABLES = {
 }
 
 EXPECTED_COLUMNS = {
-    "learner_profile": {"id", "cefr_by_skill", "goals", "constraints", "created_at", "updated_at"},
+    "learner_profile": {
+        "id",
+        "cefr_by_skill",
+        "goals",
+        "constraints",
+        "created_at",
+        "updated_at",
+    },
     "vocabulary_item": {
-        "id", "learner_id", "lemma", "source", "lexicon_provider", "textbook_id",
-        "unit_ref", "status", "difficulty", "stability", "next_review",
-        "retrievability", "learned", "learned_checked_at", "created_at", "updated_at",
+        "id",
+        "learner_id",
+        "lemma",
+        "source",
+        "lexicon_provider",
+        "textbook_id",
+        "unit_ref",
+        "status",
+        "difficulty",
+        "stability",
+        "next_review",
+        "retrievability",
+        "learned",
+        "learned_checked_at",
+        "created_at",
+        "updated_at",
     },
     "error_log": {
-        "id", "learner_id", "error_type", "topic", "context", "occurred_at",
-        "vocab_id", "rule_id", "session_id", "unit_ref", "count_7d",
+        "id",
+        "learner_id",
+        "error_type",
+        "topic",
+        "context",
+        "occurred_at",
+        "vocab_id",
+        "rule_id",
+        "session_id",
+        "unit_ref",
+        "count_7d",
     },
     "review_record": {
-        "id", "learner_id", "vocab_id", "rating", "success", "drill_modality",
-        "reviewed_at", "session_id", "error_id", "stability_after",
-        "difficulty_after", "next_review_after",
+        "id",
+        "learner_id",
+        "vocab_id",
+        "rating",
+        "success",
+        "drill_modality",
+        "reviewed_at",
+        "session_id",
+        "error_id",
+        "stability_after",
+        "difficulty_after",
+        "next_review_after",
     },
     "session": {
-        "id", "learner_id", "active_agent", "touched_lemmas", "touched_rule_ids",
-        "tblt_phase", "drafts", "unit_ref", "started_at", "updated_at",
+        "id",
+        "learner_id",
+        "active_agent",
+        "touched_lemmas",
+        "touched_rule_ids",
+        "tblt_phase",
+        "drafts",
+        "unit_ref",
+        "started_at",
+        "updated_at",
     },
 }
 
@@ -91,13 +134,17 @@ def migrated_url(fresh_db_url: str) -> str:
     return fresh_db_url
 
 
-def test_bootstrap_creates_ltm_session_and_checkpointer_tables(migrated_url: str) -> None:
+@pytest.mark.integration_db
+def test_bootstrap_creates_ltm_session_and_checkpointer_tables(
+    migrated_url: str,
+) -> None:
     tables = _tables(migrated_url)
     assert LTM_TABLES <= tables
-    assert {"checkpoints", "checkpoint_blobs", "checkpoint_writes"} <= tables
+    assert CHECKPOINT_TABLES <= tables
     assert "alembic_version" in tables
 
 
+@pytest.mark.integration_db
 def test_bootstrap_is_idempotent(migrated_url: str) -> None:
     asyncio.run(bootstrap(migrated_url, lock_timeout=10))
     with psycopg.connect(migrated_url) as conn:
@@ -108,6 +155,7 @@ def test_alembic_does_not_manage_checkpointer_tables() -> None:
     assert not CHECKPOINT_TABLES & set(Base.metadata.tables)
 
 
+@pytest.mark.integration_db
 def test_d5_columns_present(migrated_url: str) -> None:
     for table, expected in EXPECTED_COLUMNS.items():
         assert expected <= set(_columns(migrated_url, table)), table
@@ -123,6 +171,7 @@ def test_d5_columns_present(migrated_url: str) -> None:
     assert session["drafts"][0] == "jsonb"
 
 
+@pytest.mark.integration_db
 def test_session_fks_are_nullable_on_delete_set_null(migrated_url: str) -> None:
     for table in ("error_log", "review_record"):
         assert _columns(migrated_url, table)["session_id"][1] == "YES"
@@ -136,6 +185,7 @@ def test_session_fks_are_nullable_on_delete_set_null(migrated_url: str) -> None:
     assert by_table.get("review_record") == "n"
 
 
+@pytest.mark.integration_db
 def test_models_match_migration(migrated_url: str) -> None:
     engine = create_engine(to_sqlalchemy_url(migrated_url))
     try:
@@ -155,6 +205,7 @@ def test_models_match_migration(migrated_url: str) -> None:
     assert diff == []
 
 
+@pytest.mark.integration_db
 def test_checkpointer_round_trip(migrated_url: str) -> None:
     thread_id = "learner:42/session:ünï-🙂 thread"
     checkpoint = {
@@ -167,7 +218,7 @@ def test_checkpointer_round_trip(migrated_url: str) -> None:
             "n": 3,
             "touched_lemmas": ["apple", "pear"],
             "drafts": {"reply": {"text": "hi", "tokens": [1, 2, 3]}},
-            "when": datetime(2026, 10, 24, 10, 0, tzinfo=timezone.utc),
+            "when": datetime(2026, 10, 24, 10, 0, tzinfo=UTC),
         },
         "channel_versions": {
             "active_agent": "1",
@@ -184,7 +235,10 @@ def test_checkpointer_round_trip(migrated_url: str) -> None:
     async def run():
         async with AsyncPostgresSaver.from_conn_string(migrated_url) as saver:
             written = await saver.aput(
-                config, checkpoint, {"source": "input", "step": 0}, checkpoint["channel_versions"]
+                config,
+                checkpoint,
+                {"source": "input", "step": 0},
+                checkpoint["channel_versions"],
             )
             return await saver.aget(written)
 
@@ -231,6 +285,7 @@ def test_unreachable_db_fails_loudly() -> None:
         )
 
 
+@pytest.mark.integration_db
 def test_upgrade_ok_setup_fails_then_restart_recovers(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -248,6 +303,7 @@ def test_upgrade_ok_setup_fails_then_restart_recovers(
     assert "checkpoints" in _tables(fresh_db_url)
 
 
+@pytest.mark.integration_db
 def test_upgrade_fails_setup_not_run_then_restart_recovers(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -270,6 +326,7 @@ def test_upgrade_fails_setup_not_run_then_restart_recovers(
     assert LTM_TABLES <= _tables(fresh_db_url)
 
 
+@pytest.mark.integration_db
 def test_lock_wait_is_bounded_and_loud(fresh_db_url: str) -> None:
     with psycopg.connect(fresh_db_url, autocommit=True) as holder:
         holder.execute("SELECT pg_advisory_lock(%s)", (BOOTSTRAP_LOCK_KEY,))
@@ -280,6 +337,7 @@ def test_lock_wait_is_bounded_and_loud(fresh_db_url: str) -> None:
     assert "learner_profile" not in _tables(fresh_db_url)  # nothing ran unlocked
 
 
+@pytest.mark.integration_db
 def test_concurrent_bootstraps_are_serialized(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -296,8 +354,12 @@ def test_concurrent_bootstraps_are_serialized(
 
         return inner
 
-    monkeypatch.setattr(bootstrap_mod, "run_alembic_upgrade", wrap("upgrade", orig_upgrade))
-    monkeypatch.setattr(bootstrap_mod, "run_checkpointer_setup", wrap("setup", orig_setup))
+    monkeypatch.setattr(
+        bootstrap_mod, "run_alembic_upgrade", wrap("upgrade", orig_upgrade)
+    )
+    monkeypatch.setattr(
+        bootstrap_mod, "run_checkpointer_setup", wrap("setup", orig_setup)
+    )
 
     async def both() -> None:
         await asyncio.gather(
@@ -308,7 +370,12 @@ def test_concurrent_bootstraps_are_serialized(
     asyncio.run(both())
 
     # Two full critical sections, never interleaved.
-    unit = [("start", "upgrade"), ("end", "upgrade"), ("start", "setup"), ("end", "setup")]
+    unit = [
+        ("start", "upgrade"),
+        ("end", "upgrade"),
+        ("start", "setup"),
+        ("end", "setup"),
+    ]
     assert events == unit + unit
     assert LTM_TABLES <= _tables(fresh_db_url)
     assert "checkpoints" in _tables(fresh_db_url)
@@ -316,6 +383,7 @@ def test_concurrent_bootstraps_are_serialized(
         assert conn.execute("SELECT count(*) FROM alembic_version").fetchone() == (1,)
 
 
+@pytest.mark.integration_db
 def test_lifespan_bootstraps_then_health_ok(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -327,6 +395,7 @@ def test_lifespan_bootstraps_then_health_ok(
     assert response.json() == {"status": "ok"}
 
 
+@pytest.mark.integration_db
 def test_lifespan_failure_means_no_serving(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -335,6 +404,5 @@ def test_lifespan_failure_means_no_serving(
 
     monkeypatch.setenv("DATABASE_URL", fresh_db_url)
     monkeypatch.setattr(bootstrap_mod, "run_checkpointer_setup", boom)
-    with pytest.raises(BootstrapError):
-        with TestClient(app):
-            pytest.fail("app must not start serving")
+    with pytest.raises(BootstrapError), TestClient(app):
+        pytest.fail("app must not start serving")
