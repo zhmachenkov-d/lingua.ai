@@ -1,0 +1,17 @@
+[project]
+name = "lingua-api"
+version = "0.1.0"
+description = "Lingua.ai API scaffold (Compose tracer bullet)"
+requires-python = ">=3.13"
+dependencies = [
+  "fastapi>=0.161.1,<0.162",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
