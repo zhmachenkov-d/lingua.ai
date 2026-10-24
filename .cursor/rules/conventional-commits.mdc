@@ -32,6 +32,13 @@ The merge commit subject on `main` (squash or merge) **must** use Conventional C
 - When using `gh pr merge`, pass an explicit subject (`--subject` / equivalent); never accept GitHub’s default
 - Forbidden subjects: `Merge pull request #123 from …`, `Merge branch '…'`, bare PR numbers, or any non-conventional default
 
+## After a successful PR merge
+
+- Delete the feature branch on the remote after the PR merges successfully
+- Prefer `gh pr merge … --delete-branch` so remote cleanup happens with the merge
+- If the remote branch remains, delete it (`gh pr view` / `git push origin --delete <branch>`)
+- Delete the local feature branch too (`git branch -d <branch>`), then return to an up-to-date `main` (`git checkout main && git pull`)
+
 ## Branch protection
 
 - Never push commits directly to `main` (or `master`)
