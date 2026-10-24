@@ -9,6 +9,11 @@
       "version": "latest",
       "extensions": "dlvhdr/gh-dash,github/gh-aw"
     },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest",
+      "moby": false,
+      "dockerDashComposeVersion": "v2"
+    },
     "./uv": {
       "version": "latest"
     }
