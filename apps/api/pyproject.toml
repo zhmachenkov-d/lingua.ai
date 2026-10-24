@@ -8,6 +8,12 @@ dependencies = [
   "uvicorn[standard]>=0.34.0",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28.0",
+  "pytest>=8.0.0",
+]
+
 [build-system]
 requires = ["setuptools>=75"]
 build-backend = "setuptools.build_meta"
