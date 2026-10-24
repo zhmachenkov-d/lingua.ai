@@ -10,7 +10,11 @@ from app.models.base import Base, created_at_col, updated_at_col, uuid_pk
 
 
 class LearnerProfile(Base):
-    """LTM — research-package D5 §5.2. Written only via the api profile path (AD-4)."""
+    """LTM — research-package D5 §5.2.
+
+    ``cefr_by_skill`` is written only via the api ``/profile/cefr`` path (AD-4).
+    Domains may read; ingest and agents must not invent CEFR.
+    """
 
     __tablename__ = "learner_profile"
 

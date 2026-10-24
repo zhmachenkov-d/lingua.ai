@@ -79,6 +79,27 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 **Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9).
 
+### LearnerProfile CEFR (api write path)
+
+Sole LTM writer for CEFR is this api profile path (AD-4) — ingest and domain agents must not invent CEFR. MVP identity is one hardcoded local learner (`MVP_LEARNER_ID` in `apps/api/app/db/constants.py`); routes use singleton URLs with **no path id** (AD-10).
+
+| Method | Path | Behavior |
+| ------ | ---- | -------- |
+| `PUT` | `/profile/cefr` | Full-replace `learner_profile.cefr_by_skill` for the MVP learner (other columns untouched). Body = bare CEFR map. Success → `204` No Content. |
+| `GET` | `/profile/cefr` | Bare CEFR map. No row yet → `200` `{}` and **no insert**. |
+
+**Body / stored shape:** keys allowed — `overall` plus optional `reading`, `listening`, `speaking`, `writing`, `vocab`. Levels — closed set `A1\|A2\|B1\|B2\|C1\|C2` only. Unknown keys or invalid tokens → `422`, DB unchanged. `PUT` is a full replace of the JSONB column (omitted skills/`vocab` are absent after write). Omit `overall` or send `overall: null` to clear it.
+
+**Empty overall gate signal:** missing/null `overall` after a successful write (or before any write) remains detectable — there is no silent seed/default CEFR. Later Ready Tutor gating (FR-7) will treat empty/invalid overall as block; this story only exposes the readable store.
+
+```bash
+# Example (api on :8000 after Compose up)
+curl -s -X PUT http://127.0.0.1:8000/profile/cefr \
+  -H 'Content-Type: application/json' \
+  -d '{"overall":"B1","reading":"B1","vocab":"A2"}'
+curl -s http://127.0.0.1:8000/profile/cefr
+```
+
 Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` (lifespan + mocked bootstrap) and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
 
 ### Quality gates
@@ -122,7 +143,7 @@ docker compose --profile ingest run --rm ingest
 compose.yaml       # default bridge topology (service DNS + ports)
 compose.dev.yaml   # nested-Docker host-network alternative
 apps/
-  api/      # FastAPI + GET /health, startup bootstrap, LTM models + Alembic
+  api/      # FastAPI + /health + /profile/cefr, startup bootstrap, LTM models + Alembic
   web/      # Angular 22.2.x default shell (+ nginx.dev.conf for host stack)
   ingest/   # job-profile stub
 ```
