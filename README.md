@@ -14,24 +14,46 @@ cp .env.example .env
 # Fill placeholders as needed (DB credentials, empty LLM stubs). Never commit .env.
 ```
 
-Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → web, `8000` → api, `5432` → db. They are not env-overridable.
+Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → web, `8000` → api, `5432` → db. They are not env-overridable. The web container nginx must also **listen on 4200** (not 80) so that mapping stays valid.
 
 ## Start the skeleton
 
 ```bash
-# Nested/devcontainer Docker without iptables/NAT: use classic builder so
-# compose `build.network: host` can reach PyPI/npm during image builds.
-DOCKER_BUILDKIT=0 docker compose up --build
+docker compose up --build
 ```
 
 Default `up` starts `web`, `api`, and `db`. The `ingest` service is **not** started (Compose profile `ingest`).
 
+If image builds fail to resolve PyPI/npm (common in nested Docker without iptables/NAT), rebuild with the classic builder so Compose `build.network: host` works:
+
+```bash
+DOCKER_BUILDKIT=0 docker compose up --build
+```
+
+The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is fine when BuildKit works. Use `DOCKER_BUILDKIT=0` only as the fallback above.
+
 ### URLs
 
-| Service | URL |
-| ------- | --- |
-| Web (Angular default shell) | http://127.0.0.1:4200/ |
-| API health | http://127.0.0.1:8000/health |
+| Service                                  | URL                              |
+| ---------------------------------------- | -------------------------------- |
+| Web (Angular production build via nginx) | http://127.0.0.1:4200/           |
+| API health (direct)                      | http://127.0.0.1:8000/health     |
+| API health via web proxy                 | http://127.0.0.1:4200/api/health |
+
+Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). The `web-dev` profile (`ng serve`) does not include that proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
+
+Compose pins service IPs and `extra_hosts` so `db` / `api` resolve even when Docker’s embedded DNS (`127.0.0.11`) is unavailable (common with nested Docker + `iptables: false`).
+
+Default Compose `web` serves a **production** static build (nginx). Source edits under `apps/web` are not visible until you rebuild the image.
+
+For Angular HMR against the same localhost port:
+
+```bash
+docker compose stop web
+docker compose --profile web-dev up web-dev
+```
+
+Or on the host: `cd apps/web && npm start` (port 4200). Do not run `web` and `web-dev` together — they both publish `127.0.0.1:4200`.
 
 ### Ingest job stub
 
