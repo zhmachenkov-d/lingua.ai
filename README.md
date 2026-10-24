@@ -48,6 +48,7 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 | Web (Angular production build via nginx) | http://127.0.0.1:4200/           |
 | API health (direct)                      | http://127.0.0.1:8000/health     |
 | API health via web proxy                 | http://127.0.0.1:4200/api/health |
+| API learner WebSocket (Router turns)     | ws://127.0.0.1:8000/ws           |
 
 Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). The `web-dev` profile (`ng serve`) does not include that proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
 
@@ -100,7 +101,35 @@ curl -s -X PUT http://127.0.0.1:8000/profile/cefr \
 curl -s http://127.0.0.1:8000/profile/cefr
 ```
 
-Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` (lifespan + mocked bootstrap) and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
+Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` (lifespan + mocked bootstrap), mocked WebSocket/LLM turn tests, and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
+
+### Learner WebSocket turns (Router skeleton)
+
+Single unauthenticated MVP entry: **`GET /ws`** (WebSocket upgrade). All learner turns are Router turns (AD-6). At most one active `/ws` for the MVP learner — a second concurrent upgrade is rejected with **HTTP 409**; the first connection stays open. Within one connection, at most one in-flight turn (overlapping `turn_request` → `error` `invalid_turn_request`).
+
+**Event kinds (closed set):**
+
+| Direction | Kind | Role |
+| --------- | ---- | ---- |
+| client → server | `turn_request` | `{ "kind": "turn_request", "text": "<string>", "turn_id"?: "<string>" }` |
+| server → client | `token_delta` | Streaming tokens (unused on CTA/blank skeleton paths) |
+| server → client | `turn_complete` | End of turn; CTA/clarify payloads live here |
+| server → client | `error` | Structured failure |
+
+Optional client `turn_id` is echoed on the matching `turn_complete` / `error`; omit it when the request had none.
+
+**CTA / blank skeleton (this story):** no domain agent nodes and no free-form chat. Non-blank turns call the in-process DeepSeek adapter (classify stub); with no handoff, the reply is a fixed Russian template `message`, `ctas: ["tutor","vocabulary","review"]`, `clarify: null`, and `backup_notice` (string or null). Blank / whitespace-only `text` (after Unicode strip) returns the same CTA shape **without** calling the LLM. Zero `token_delta` on these paths. Adapter completion text is never copied into `message`.
+
+**LLM degrade (FR-1 subset):** primary `deepseek-flash`, escalation `deepseek-v4-pro` (OpenAI-compatible `https://api.deepseek.com`). Compose passes `DEEPSEEK_API_KEY` into `api` from `.env`. Missing/empty key → `error` `llm_misconfigured`. Both models down / unreachable / timeout / incomplete → `error` `llm_unavailable`. Escalation success → `backup_notice`: `Сейчас отвечает запасная модель.` (never folded into `message`). No monthly spend-cap enforcement in this story; per-request timeout and `max_tokens` still apply. No invented chat content.
+
+**Error `code` values:** `llm_misconfigured` | `llm_unavailable` | `invalid_turn_request` | `checkpointer_write_failed`. Invalid inbound (non-JSON, bad kind, missing/non-string `text`) and overlapping in-flight turns use `invalid_turn_request` with no LLM call and no checkpointer write. Checkpointer snapshot write happens only after successful CTA/blank handling (Router sole writer, AD-3); failed `aput` → `checkpointer_write_failed` and no success `turn_complete`.
+
+```bash
+# Example (api on :8000; needs websocat or similar)
+# Blank → CTA without LLM:
+printf '%s\n' '{"kind":"turn_request","text":"  ","turn_id":"1"}' | websocat -n ws://127.0.0.1:8000/ws
+# Non-blank with key set → CTA (or error if LLM down / key unset)
+```
 
 ### Quality gates
 
@@ -143,7 +172,7 @@ docker compose --profile ingest run --rm ingest
 compose.yaml       # default bridge topology (service DNS + ports)
 compose.dev.yaml   # nested-Docker host-network alternative
 apps/
-  api/      # FastAPI + /health + /profile/cefr, startup bootstrap, LTM models + Alembic
+  api/      # FastAPI + /health + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
   web/      # Angular 22.2.x default shell (+ nginx.dev.conf for host stack)
   ingest/   # job-profile stub
 ```

@@ -33,6 +33,7 @@ services:
     network_mode: host
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     command:
       ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]
     healthcheck:

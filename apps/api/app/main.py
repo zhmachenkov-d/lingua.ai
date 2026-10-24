@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes.profile import router as profile_router
+from app.api.routes.ws import router as ws_router
 from app.db.bootstrap import bootstrap
 from app.db.session import dispose_engine
 
@@ -19,6 +20,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="lingua-api", lifespan=lifespan)
 app.include_router(profile_router)
+app.include_router(ws_router)
 
 
 @app.get("/health")
