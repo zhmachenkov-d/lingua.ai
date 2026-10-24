@@ -20,9 +20,7 @@ class ErrorLog(Base):
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    vocab_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("vocabulary_item.id")
-    )
+    vocab_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("vocabulary_item.id"))
     rule_id: Mapped[str | None] = mapped_column(Text)
     # Optional trace to the non-authoritative Session mirror; not STM SoT.
     session_id: Mapped[uuid.UUID | None] = mapped_column(

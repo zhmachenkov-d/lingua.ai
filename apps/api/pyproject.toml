@@ -18,6 +18,8 @@ dependencies = [
 dev = [
   "httpx>=0.28.0",
   "pytest>=8.0.0",
+  "ruff>=0.11.0",
+  "mypy>=1.15.0",
 ]
 
 [build-system]
@@ -30,5 +32,18 @@ include = ["app*"]
 
 [tool.pytest.ini_options]
 markers = [
-  "integration_db: needs a reachable Postgres via DATABASE_URL (Compose db); skipped otherwise",
+  "integration_db: needs a reachable Postgres via DATABASE_URL (Compose db); skipped locally when missing, fails under CI",
 ]
+
+[tool.ruff]
+target-version = "py313"
+src = ["app"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+packages = ["app"]
+ignore_missing_imports = true
