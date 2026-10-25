@@ -1,0 +1,60 @@
+<div class="shell">
+  <header class="shell__header">
+    <h1 class="shell__brand">{{ brandName }}</h1>
+  </header>
+
+  <div class="shell__thread" role="log" aria-live="polite" aria-relevant="additions">
+    @for (bubble of bubbles(); track bubble.id) {
+      <div
+        class="bubble"
+        [class.bubble--outbound]="bubble.role === 'outbound'"
+        [class.bubble--inbound]="bubble.role === 'inbound'"
+        [class.bubble--system]="bubble.role === 'system'"
+        [class.bubble--notice]="bubble.role === 'notice'"
+      >
+        <p class="bubble__text">{{ bubble.text }}</p>
+      </div>
+    }
+  </div>
+
+  @if (ctas().length > 0) {
+    <div class="cta-row" role="group" aria-label="Агенты">
+      @for (cta of ctas(); track cta.id) {
+        <button type="button" class="cta" disabled aria-disabled="true">
+          <span class="cta__label">{{ cta.label }}</span>
+          <span class="cta__soon">{{ soonLabel }}</span>
+        </button>
+      }
+    </div>
+  }
+
+  @if (showNetworkFail()) {
+    <div class="banner banner--error" role="alert">
+      <p class="banner__text">{{ networkFail }}</p>
+      <button type="button" class="banner__retry" (click)="retryConnection()">
+        {{ retryLabel }}
+      </button>
+    </div>
+  }
+
+  @if (localError(); as err) {
+    <p class="banner banner--error" role="alert">{{ err }}</p>
+  }
+
+  <form class="composer" (submit)="onSubmit($event)">
+    <label class="composer__label" for="chat-composer-input">{{ composerPlaceholder }}</label>
+    <textarea
+      id="chat-composer-input"
+      class="composer__input"
+      rows="2"
+      [placeholder]="composerPlaceholder"
+      [ngModel]="draft()"
+      (ngModelChange)="draft.set($event)"
+      [disabled]="composerDisabled"
+      name="draft"
+    ></textarea>
+    <button type="submit" class="composer__send" [disabled]="composerDisabled">
+      {{ sendLabel }}
+    </button>
+  </form>
+</div>

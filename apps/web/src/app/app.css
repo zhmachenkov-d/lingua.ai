@@ -1,0 +1,6 @@
+:host {
+  display: block;
+  height: 100%;
+  min-height: 100dvh;
+  background: var(--lingua-color-background);
+}

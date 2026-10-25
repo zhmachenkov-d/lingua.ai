@@ -1,6 +1,6 @@
 # lingua.ai — Compose stack skeleton
 
-Local modular-monolith **stack/skeleton shell** (not the learner UI). Tracer-bullet topology: Angular `web`, FastAPI `api`, Postgres+pgvector `db`, and an optional `ingest` job stub.
+Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sage tokens — chat surface T0–T1 only; **not** FR-15 / SM-8 complete), FastAPI `api`, Postgres+pgvector `db`, and an optional `ingest` job stub.
 
 ## Prerequisites
 
@@ -45,14 +45,14 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 
 | Service                                  | URL                              |
 | ---------------------------------------- | -------------------------------- |
-| Web (Angular production build via nginx) | http://127.0.0.1:4200/           |
+| Web (Angular chat shell via nginx)       | http://127.0.0.1:4200/           |
 | API health (direct)                      | http://127.0.0.1:8000/health     |
 | API health via web proxy                 | http://127.0.0.1:4200/api/health |
 | API learner WebSocket (Router turns)     | ws://127.0.0.1:8000/ws           |
 
-Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). The `web-dev` profile (`ng serve`) does not include that proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
+Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). There is **no** nginx `/ws` proxy — the chat client opens `ws://{hostname}:8000/ws` directly (same host as the page, port 8000). The `web-dev` profile (`ng serve`) likewise has no `/api/` proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
 
-Default Compose `web` serves a **production** static build (nginx). Source edits under `apps/web` are not visible until you rebuild the image.
+Default Compose `web` serves a **production** static build (nginx). Source edits under `apps/web` (chat shell, `src/styles/tokens.css`, self-hosted fonts) are not visible until you **rebuild** the `web` image (`docker compose build web`).
 
 For Angular HMR against the same localhost port:
 
@@ -173,6 +173,6 @@ compose.yaml       # default bridge topology (service DNS + ports)
 compose.dev.yaml   # nested-Docker host-network alternative
 apps/
   api/      # FastAPI + /health + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
-  web/      # Angular 22.2.x default shell (+ nginx.dev.conf for host stack)
+  web/      # Angular 22.2.x chat shell + Soft Sage tokens (T0–T1; + nginx.dev.conf for host stack)
   ingest/   # job-profile stub
 ```
