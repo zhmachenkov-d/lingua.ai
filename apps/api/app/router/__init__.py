@@ -3,12 +3,12 @@
 from app.router.turn import (
     CTA_MESSAGE,
     CTAS,
-    ErrorCode,
     TurnError,
     TurnSuccess,
     get_turn_snapshot,
     handle_turn,
 )
+from app.schemas.ws import ErrorCode
 
 __all__ = [
     "CTA_MESSAGE",

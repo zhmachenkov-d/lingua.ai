@@ -1,4 +1,4 @@
-"""Router checkpointer write round-trip (integration_db) + aput fail unit."""
+"""Router checkpointer: three integration_db tests + LLM-error skip unit."""
 
 from __future__ import annotations
 
