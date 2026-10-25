@@ -384,6 +384,53 @@ def test_concurrent_bootstraps_are_serialized(
 
 
 @pytest.mark.integration_db
+@pytest.mark.parametrize("slow_step", ["run_alembic_upgrade", "run_checkpointer_setup"])
+def test_work_timeout_holds_lock_until_worker_finishes(
+    fresh_db_url: str, monkeypatch: pytest.MonkeyPatch, slow_step: str
+) -> None:
+    started: list[str] = []
+
+    async def probe_lock_free() -> bool:
+        async with await psycopg.AsyncConnection.connect(
+            fresh_db_url, autocommit=True
+        ) as probe:
+            cur = await probe.execute(
+                "SELECT pg_try_advisory_lock(%s)", (BOOTSTRAP_LOCK_KEY,)
+            )
+            row = await cur.fetchone()
+            free = bool(row and row[0])
+            if free:
+                await probe.execute(
+                    "SELECT pg_advisory_unlock(%s)", (BOOTSTRAP_LOCK_KEY,)
+                )
+            return free
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        async def slow(_: str) -> None:
+            started.append(slow_step)
+            await release.wait()  # simulated worker outliving the work timeout
+
+        monkeypatch.setattr(bootstrap_mod, slow_step, slow)
+        monkeypatch.setattr(bootstrap_mod, "WORK_TIMEOUT_SECONDS", 0.5)
+        task = asyncio.create_task(bootstrap(fresh_db_url, lock_timeout=10))
+        deadline = time.monotonic() + 30
+        while not started and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        assert started == [slow_step]
+        await asyncio.sleep(1.5)  # well past the work timeout; worker still active
+        assert not task.done(), "bootstrap returned while worker was still running"
+        assert not await probe_lock_free(), "lock released while worker still active"
+        release.set()
+        with pytest.raises(bootstrap_mod.BootstrapWorkTimeout):
+            await task
+        assert await probe_lock_free(), "lock not released after worker finished"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.integration_db
 def test_lifespan_bootstraps_then_health_ok(
     fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -115,7 +115,7 @@ On startup the `api` prepares the shared Postgres itself — no separate migrati
 1. acquire Postgres advisory lock `7265300117001` (session-level, polled; waits at most **60 s**; connect uses a **10 s** TCP timeout and keepalives so the lock session stays up while Alembic uses a separate connection)
 2. `alembic upgrade head` — learner LTM (`LearnerProfile`, `VocabularyItem` incl. FSRS fields, `ReviewRecord`, `ErrorLog`) plus the `session` mirror table (bounded **120 s** under the lock)
 3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; also bounded **120 s**)
-4. release the lock
+4. release the lock — only after steps 2 and 3 have actually finished; a work timeout still fails startup loudly, but the lock is held until the in-flight migrate/setup worker ends (a hung worker pins it until the process or session dies)
 
 Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If `DATABASE_URL` is missing, Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
 
