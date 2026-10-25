@@ -20,13 +20,13 @@ Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → we
 
 Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the keys below. Compose substitutes `${VAR}` from the project `.env` only — services do **not** get an `env_file` dump of every key. Never commit `.env` or real keys.
 
-| Variable | Required? | Purpose | How to obtain |
-| -------- | --------- | ------- | ------------- |
-| `POSTGRES_USER` | **Yes** (compose fails without it) | Postgres role for `db` + derived `DATABASE_URL` for `api` | Choose a local username (example uses `lingua`) |
-| `POSTGRES_PASSWORD` | **Yes** | Postgres password (same derivation) | Choose a local password; keep it out of git |
-| `POSTGRES_DB` | **Yes** | Database name | Choose a local name (example uses `lingua`) |
-| `DEEPSEEK_API_KEY` | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek) | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
-| `GH_TOKEN` | No (Compose ignores it) | Host GitHub CLI / Codespaces only | Optional; leave empty for Compose |
+| Variable            | Required?                                                   | Purpose                                                   | How to obtain                                                                           |
+| ------------------- | ----------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + derived `DATABASE_URL` for `api` | Choose a local username (example uses `lingua`)                                         |
+| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (same derivation)                       | Choose a local password; keep it out of git                                             |
+| `POSTGRES_DB`       | **Yes**                                                     | Database name                                             | Choose a local name (example uses `lingua`)                                             |
+| `DEEPSEEK_API_KEY`  | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek)                         | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
+| `GH_TOKEN`          | No (Compose ignores it)                                     | Host GitHub CLI / Codespaces only                         | Optional; leave empty for Compose                                                       |
 
 `DATABASE_URL` is **not** a host secret — Compose builds it from the three `POSTGRES_*` values (`@db` on the default stack, `@127.0.0.1` on `compose.dev.yaml`).
 
@@ -88,12 +88,12 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 
 ### URLs
 
-| Service                                  | URL                              |
-| ---------------------------------------- | -------------------------------- |
-| Web (Angular chat shell via nginx)       | http://127.0.0.1:4200/           |
-| API health (direct)                      | http://127.0.0.1:8000/health     |
-| API health via web proxy                 | http://127.0.0.1:4200/api/health |
-| API learner WebSocket (Router turns)     | ws://127.0.0.1:8000/ws           |
+| Service                              | URL                              |
+| ------------------------------------ | -------------------------------- |
+| Web (Angular chat shell via nginx)   | http://127.0.0.1:4200/           |
+| API health (direct)                  | http://127.0.0.1:8000/health     |
+| API health via web proxy             | http://127.0.0.1:4200/api/health |
+| API learner WebSocket (Router turns) | ws://127.0.0.1:8000/ws           |
 
 Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). There is **no** nginx `/ws` proxy — the chat client opens `ws://{hostname}:8000/ws` directly (same host as the page, port 8000). The `web-dev` profile (`ng serve`) likewise has no `/api/` proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
 
@@ -129,10 +129,10 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 Sole LTM writer for CEFR is this api profile path (AD-4) — ingest and domain agents must not invent CEFR. MVP identity is one hardcoded local learner (`MVP_LEARNER_ID` in `apps/api/app/db/constants.py`); routes use singleton URLs with **no path id** (AD-10).
 
-| Method | Path | Behavior |
-| ------ | ---- | -------- |
-| `PUT` | `/profile/cefr` | Full-replace `learner_profile.cefr_by_skill` for the MVP learner (other columns untouched). Body = bare CEFR map. Success → `204` No Content. |
-| `GET` | `/profile/cefr` | Bare CEFR map. No row yet → `200` `{}` and **no insert**. |
+| Method | Path            | Behavior                                                                                                                                      |
+| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT`  | `/profile/cefr` | Full-replace `learner_profile.cefr_by_skill` for the MVP learner (other columns untouched). Body = bare CEFR map. Success → `204` No Content. |
+| `GET`  | `/profile/cefr` | Bare CEFR map. No row yet → `200` `{}` and **no insert**.                                                                                     |
 
 **Body / stored shape:** keys allowed — `overall` plus optional `reading`, `listening`, `speaking`, `writing`, `vocab`. Levels — closed set `A1\|A2\|B1\|B2\|C1\|C2` only. Unknown keys or invalid tokens → `422`, DB unchanged. `PUT` is a full replace of the JSONB column (omitted skills/`vocab` are absent after write). Omit `overall` or send `overall: null` to clear it.
 
@@ -154,12 +154,12 @@ Single unauthenticated MVP entry: **`GET /ws`** (WebSocket upgrade). All learner
 
 **Event kinds (closed set):**
 
-| Direction | Kind | Role |
-| --------- | ---- | ---- |
-| client → server | `turn_request` | `{ "kind": "turn_request", "text": "<string>", "turn_id"?: "<string>" }` |
-| server → client | `token_delta` | Streaming tokens (unused on CTA/blank skeleton paths) |
-| server → client | `turn_complete` | End of turn; CTA/clarify payloads live here |
-| server → client | `error` | Structured failure |
+| Direction       | Kind            | Role                                                                     |
+| --------------- | --------------- | ------------------------------------------------------------------------ |
+| client → server | `turn_request`  | `{ "kind": "turn_request", "text": "<string>", "turn_id"?: "<string>" }` |
+| server → client | `token_delta`   | Streaming tokens (unused on CTA/blank skeleton paths)                    |
+| server → client | `turn_complete` | End of turn; CTA/clarify payloads live here                              |
+| server → client | `error`         | Structured failure                                                       |
 
 Optional client `turn_id` is echoed on the matching `turn_complete` / `error`; omit it when the request had none.
 
