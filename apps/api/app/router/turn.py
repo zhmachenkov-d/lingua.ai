@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Final, Literal
+from typing import Any, Final
 
 from openai import AsyncOpenAI
 
@@ -17,19 +17,13 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
+from app.schemas.ws import ErrorCode
 
 # Fixed RU template — never copy adapter completion text into message.
 CTA_MESSAGE: Final = (
     "Выберите, чем заняться: Tutor (урок), Vocabulary (слова) или Review (повторение)."
 )
 CTAS: Final = ("tutor", "vocabulary", "review")
-
-ErrorCode = Literal[
-    "llm_misconfigured",
-    "llm_unavailable",
-    "invalid_turn_request",
-    "checkpointer_write_failed",
-]
 
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "llm_misconfigured": (

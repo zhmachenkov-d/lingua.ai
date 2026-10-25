@@ -10,6 +10,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
 from app.router.turn import ERROR_MESSAGES, TurnError, TurnSuccess, handle_turn
+from app.schemas.ws import ErrorEvent, TurnCompleteEvent
 
 router = APIRouter(tags=["ws"])
 
@@ -54,14 +55,11 @@ def _parse_turn_id(raw: object) -> str | None:
 
 
 def _invalid_error(*, turn_id: str | None) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "kind": "error",
-        "message": ERROR_MESSAGES["invalid_turn_request"],
-        "code": "invalid_turn_request",
-    }
-    if turn_id is not None:
-        payload["turn_id"] = turn_id
-    return payload
+    return ErrorEvent(
+        message=ERROR_MESSAGES["invalid_turn_request"],
+        code="invalid_turn_request",
+        turn_id=turn_id,
+    ).to_wire()
 
 
 def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
@@ -83,38 +81,29 @@ def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
 
 
 def _success_wire(result: TurnSuccess) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "kind": "turn_complete",
-        "message": result.message,
-        "ctas": list(result.ctas),
-        "clarify": None,
-        "backup_notice": result.backup_notice,
-    }
-    if result.turn_id is not None:
-        payload["turn_id"] = result.turn_id
-    return payload
+    return TurnCompleteEvent(
+        message=result.message,
+        ctas=list(result.ctas),
+        clarify=None,
+        backup_notice=result.backup_notice,
+        turn_id=result.turn_id,
+    ).to_wire()
 
 
 def _error_wire(result: TurnError) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "kind": "error",
-        "message": result.message,
-        "code": result.code,
-    }
-    if result.turn_id is not None:
-        payload["turn_id"] = result.turn_id
-    return payload
+    return ErrorEvent(
+        message=result.message,
+        code=result.code,
+        turn_id=result.turn_id,
+    ).to_wire()
 
 
 def _unexpected_error(*, turn_id: str | None) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "kind": "error",
-        "message": ERROR_MESSAGES["llm_unavailable"],
-        "code": "llm_unavailable",
-    }
-    if turn_id is not None:
-        payload["turn_id"] = turn_id
-    return payload
+    return ErrorEvent(
+        message=ERROR_MESSAGES["llm_unavailable"],
+        code="llm_unavailable",
+        turn_id=turn_id,
+    ).to_wire()
 
 
 async def _deliver_finished(

@@ -1,7 +1,6 @@
 /** AD-6 WebSocket envelopes — mirrors apps/api/app/schemas/ws.py. */
 
 export type TurnRequestKind = 'turn_request';
-export type ServerEventKind = 'token_delta' | 'turn_complete' | 'error';
 
 export type ErrorCode =
   'llm_misconfigured' | 'llm_unavailable' | 'invalid_turn_request' | 'checkpointer_write_failed';
