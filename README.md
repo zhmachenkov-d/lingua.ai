@@ -11,10 +11,55 @@ Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sag
 
 ```bash
 cp .env.example .env
-# Fill placeholders as needed (DB credentials, empty LLM stubs). Never commit .env.
+# Fill placeholders as needed (see Secrets checklist). Never commit .env.
 ```
 
 Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → web, `8000` → api, `5432` → db. They are not env-overridable. The web container nginx must also **listen on 4200** (not 80) so that mapping stays valid.
+
+### Secrets checklist
+
+Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the keys below. Compose substitutes `${VAR}` from the project `.env` only — services do **not** get an `env_file` dump of every key. Never commit `.env` or real keys.
+
+| Variable | Required? | Purpose | How to obtain |
+| -------- | --------- | ------- | ------------- |
+| `POSTGRES_USER` | **Yes** (compose fails without it) | Postgres role for `db` + derived `DATABASE_URL` for `api` | Choose a local username (example uses `lingua`) |
+| `POSTGRES_PASSWORD` | **Yes** | Postgres password (same derivation) | Choose a local password; keep it out of git |
+| `POSTGRES_DB` | **Yes** | Database name | Choose a local name (example uses `lingua`) |
+| `DEEPSEEK_API_KEY` | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek) | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
+| `GH_TOKEN` | No (Compose ignores it) | Host GitHub CLI / Codespaces only | Optional; leave empty for Compose |
+
+`DATABASE_URL` is **not** a host secret — Compose builds it from the three `POSTGRES_*` values (`@db` on the default stack, `@127.0.0.1` on `compose.dev.yaml`).
+
+### Wipe / reset (second deploy / SM-2 isolation)
+
+Use this when a second validation pass must not continue prior learner LTM/STM (FR-16 wipe scope). Wipe clears **everything in the Compose Postgres volume** `db_data`: learner LTM (`LearnerProfile` / CEFR, `VocabularyItem` + FSRS, `ReviewRecord`, `ErrorLog`), the non-authoritative `session` mirror, LangGraph checkpointer STM tables, and any future corpus/Ready rows in that DB.
+
+**Does not clear:** host `.env` / secrets, or personal textbook PDFs under gitignored `textbooks/` (remove those yourself if needed). Prefer removing **only** `db_data` — do not use bare `docker compose down -v` unless you also intend to drop other named volumes (e.g. `web_dev_node_modules`).
+
+```bash
+# Use the SAME compose file (-f) you used to start the stack throughout.
+
+# 1) Stop the stack
+docker compose down
+# or: docker compose -f compose.dev.yaml down
+
+# 2) Remove only the Postgres data volume (<project>_db_data).
+# Derive the name from the same compose file; skip quietly if already absent:
+DB_VOL="$(docker compose config --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['name']+'_db_data')")"
+# or with host-network stack: docker compose -f compose.dev.yaml config --format json | …
+docker volume rm "$DB_VOL" 2>/dev/null || echo "No $DB_VOL volume (already clean)"
+
+# 3) Bring the stack back up (bootstrap recreates LTM + checkpointer schemas)
+docker compose up --build
+# or: DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml up --build
+
+# 4) Confirm api is healthy after bootstrap
+curl -s http://127.0.0.1:8000/health   # expect: {"status":"ok"}
+```
+
+After wipe: re-set CEFR via `PUT /profile/cefr` (see **LearnerProfile CEFR** below for URL, body shape, and `curl` examples) before any Ready Tutor gate; re-run ingest when that pipeline exists (stub today — see Ingest job stub). Ready Tutor requires re-ingest + CEFR re-set once those features land. When Tutor gating exists, overall CEFR must be set first (empty/missing `overall` blocks Ready Tutor — FR-7).
+
+Personal textbook PDFs for a second machine belong under gitignored `textbooks/` at the repo root (owner must not redistribute course PDFs). Exact ingest filenames land with the ingest epic; without PDFs, SM-2 may still proceed on non-Tutor paths when those are available.
 
 ## Start the skeleton
 
