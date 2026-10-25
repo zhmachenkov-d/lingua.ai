@@ -11,10 +11,55 @@ Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sag
 
 ```bash
 cp .env.example .env
-# Fill placeholders as needed (DB credentials, empty LLM stubs). Never commit .env.
+# Fill placeholders as needed (see Secrets checklist). Never commit .env.
 ```
 
 Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → web, `8000` → api, `5432` → db. They are not env-overridable. The web container nginx must also **listen on 4200** (not 80) so that mapping stays valid.
+
+### Secrets checklist
+
+Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the keys below. Compose substitutes `${VAR}` from the project `.env` only — services do **not** get an `env_file` dump of every key. Never commit `.env` or real keys.
+
+| Variable            | Required?                                                   | Purpose                                                   | How to obtain                                                                           |
+| ------------------- | ----------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + derived `DATABASE_URL` for `api` | Choose a local username (example uses `lingua`)                                         |
+| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (same derivation)                       | Choose a local password; keep it out of git                                             |
+| `POSTGRES_DB`       | **Yes**                                                     | Database name                                             | Choose a local name (example uses `lingua`)                                             |
+| `DEEPSEEK_API_KEY`  | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek)                         | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
+| `GH_TOKEN`          | No (Compose ignores it)                                     | Host GitHub CLI / Codespaces only                         | Optional; leave empty for Compose                                                       |
+
+`DATABASE_URL` is **not** a host secret — Compose builds it from the three `POSTGRES_*` values (`@db` on the default stack, `@127.0.0.1` on `compose.dev.yaml`).
+
+### Wipe / reset (second deploy / SM-2 isolation)
+
+Use this when a second validation pass must not continue prior learner LTM/STM (FR-16 wipe scope). Wipe clears **everything in the Compose Postgres volume** `db_data`: learner LTM (`LearnerProfile` / CEFR, `VocabularyItem` + FSRS, `ReviewRecord`, `ErrorLog`), the non-authoritative `session` mirror, LangGraph checkpointer STM tables, and any future corpus/Ready rows in that DB.
+
+**Does not clear:** host `.env` / secrets, or personal textbook PDFs under gitignored `textbooks/` (remove those yourself if needed). Prefer removing **only** `db_data` — do not use bare `docker compose down -v` unless you also intend to drop other named volumes (e.g. `web_dev_node_modules`).
+
+```bash
+# Pick once — SAME compose file you used to start — then reuse for every step:
+dc=(docker compose)                         # default compose.yaml
+# dc=(docker compose -f compose.dev.yaml)   # host-network stack instead
+
+# 1) Stop the stack
+"${dc[@]}" down
+
+# 2) Remove only the Postgres data volume (<project>_db_data).
+# Derive the name with the SAME dc; soft-fail if already absent:
+DB_VOL="$("${dc[@]}" config --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['name']+'_db_data')")"
+docker volume rm "$DB_VOL" 2>/dev/null || echo "No $DB_VOL volume (already clean)"
+
+# 3) Bring the stack back up (bootstrap recreates LTM + checkpointer schemas)
+"${dc[@]}" up --build
+# host-network builds often need: DOCKER_BUILDKIT=0 "${dc[@]}" up --build
+
+# 4) Confirm api is healthy after bootstrap
+curl -s http://127.0.0.1:8000/health   # expect: {"status":"ok"}
+```
+
+After wipe: re-set CEFR via `PUT /profile/cefr` (see **LearnerProfile CEFR** below for URL, body shape, and `curl` examples) before any Ready Tutor gate; re-run ingest when that pipeline exists (stub today — see Ingest job stub). Ready Tutor requires re-ingest + CEFR re-set once those features land. When Tutor gating exists, overall CEFR must be set first (empty/missing `overall` blocks Ready Tutor — FR-7).
+
+Personal textbook PDFs for a second machine belong under gitignored `textbooks/` at the repo root (owner must not redistribute course PDFs). Exact ingest filenames land with the ingest epic; without PDFs, SM-2 may still proceed on non-Tutor paths when those are available.
 
 ## Start the skeleton
 
@@ -43,12 +88,12 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 
 ### URLs
 
-| Service                                  | URL                              |
-| ---------------------------------------- | -------------------------------- |
-| Web (Angular chat shell via nginx)       | http://127.0.0.1:4200/           |
-| API health (direct)                      | http://127.0.0.1:8000/health     |
-| API health via web proxy                 | http://127.0.0.1:4200/api/health |
-| API learner WebSocket (Router turns)     | ws://127.0.0.1:8000/ws           |
+| Service                              | URL                              |
+| ------------------------------------ | -------------------------------- |
+| Web (Angular chat shell via nginx)   | http://127.0.0.1:4200/           |
+| API health (direct)                  | http://127.0.0.1:8000/health     |
+| API health via web proxy             | http://127.0.0.1:4200/api/health |
+| API learner WebSocket (Router turns) | ws://127.0.0.1:8000/ws           |
 
 Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). There is **no** nginx `/ws` proxy — the chat client opens `ws://{hostname}:8000/ws` directly (same host as the page, port 8000). The `web-dev` profile (`ng serve`) likewise has no `/api/` proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
 
@@ -84,10 +129,10 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 Sole LTM writer for CEFR is this api profile path (AD-4) — ingest and domain agents must not invent CEFR. MVP identity is one hardcoded local learner (`MVP_LEARNER_ID` in `apps/api/app/db/constants.py`); routes use singleton URLs with **no path id** (AD-10).
 
-| Method | Path | Behavior |
-| ------ | ---- | -------- |
-| `PUT` | `/profile/cefr` | Full-replace `learner_profile.cefr_by_skill` for the MVP learner (other columns untouched). Body = bare CEFR map. Success → `204` No Content. |
-| `GET` | `/profile/cefr` | Bare CEFR map. No row yet → `200` `{}` and **no insert**. |
+| Method | Path            | Behavior                                                                                                                                      |
+| ------ | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PUT`  | `/profile/cefr` | Full-replace `learner_profile.cefr_by_skill` for the MVP learner (other columns untouched). Body = bare CEFR map. Success → `204` No Content. |
+| `GET`  | `/profile/cefr` | Bare CEFR map. No row yet → `200` `{}` and **no insert**.                                                                                     |
 
 **Body / stored shape:** keys allowed — `overall` plus optional `reading`, `listening`, `speaking`, `writing`, `vocab`. Levels — closed set `A1\|A2\|B1\|B2\|C1\|C2` only. Unknown keys or invalid tokens → `422`, DB unchanged. `PUT` is a full replace of the JSONB column (omitted skills/`vocab` are absent after write). Omit `overall` or send `overall: null` to clear it.
 
@@ -109,12 +154,12 @@ Single unauthenticated MVP entry: **`GET /ws`** (WebSocket upgrade). All learner
 
 **Event kinds (closed set):**
 
-| Direction | Kind | Role |
-| --------- | ---- | ---- |
-| client → server | `turn_request` | `{ "kind": "turn_request", "text": "<string>", "turn_id"?: "<string>" }` |
-| server → client | `token_delta` | Streaming tokens (unused on CTA/blank skeleton paths) |
-| server → client | `turn_complete` | End of turn; CTA/clarify payloads live here |
-| server → client | `error` | Structured failure |
+| Direction       | Kind            | Role                                                                     |
+| --------------- | --------------- | ------------------------------------------------------------------------ |
+| client → server | `turn_request`  | `{ "kind": "turn_request", "text": "<string>", "turn_id"?: "<string>" }` |
+| server → client | `token_delta`   | Streaming tokens (unused on CTA/blank skeleton paths)                    |
+| server → client | `turn_complete` | End of turn; CTA/clarify payloads live here                              |
+| server → client | `error`         | Structured failure                                                       |
 
 Optional client `turn_id` is echoed on the matching `turn_complete` / `error`; omit it when the request had none.
 
