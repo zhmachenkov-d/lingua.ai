@@ -37,21 +37,21 @@ Use this when a second validation pass must not continue prior learner LTM/STM (
 **Does not clear:** host `.env` / secrets, or personal textbook PDFs under gitignored `textbooks/` (remove those yourself if needed). Prefer removing **only** `db_data` — do not use bare `docker compose down -v` unless you also intend to drop other named volumes (e.g. `web_dev_node_modules`).
 
 ```bash
-# Use the SAME compose file (-f) you used to start the stack throughout.
+# Pick once — SAME compose file you used to start — then reuse for every step:
+dc=(docker compose)                         # default compose.yaml
+# dc=(docker compose -f compose.dev.yaml)   # host-network stack instead
 
 # 1) Stop the stack
-docker compose down
-# or: docker compose -f compose.dev.yaml down
+"${dc[@]}" down
 
 # 2) Remove only the Postgres data volume (<project>_db_data).
-# Derive the name from the same compose file; skip quietly if already absent:
-DB_VOL="$(docker compose config --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['name']+'_db_data')")"
-# or with host-network stack: docker compose -f compose.dev.yaml config --format json | …
+# Derive the name with the SAME dc; soft-fail if already absent:
+DB_VOL="$("${dc[@]}" config --format json | python3 -c "import json,sys; print(json.load(sys.stdin)['name']+'_db_data')")"
 docker volume rm "$DB_VOL" 2>/dev/null || echo "No $DB_VOL volume (already clean)"
 
 # 3) Bring the stack back up (bootstrap recreates LTM + checkpointer schemas)
-docker compose up --build
-# or: DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml up --build
+"${dc[@]}" up --build
+# host-network builds often need: DOCKER_BUILDKIT=0 "${dc[@]}" up --build
 
 # 4) Confirm api is healthy after bootstrap
 curl -s http://127.0.0.1:8000/health   # expect: {"status":"ok"}
