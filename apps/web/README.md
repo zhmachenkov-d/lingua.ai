@@ -1,59 +1,46 @@
-# Web
+# Web — Lingua AI chat shell
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 22.2.4.
+Angular 22 learner UI under `apps/web`. This story ships a **Russian-chrome text-chat shell** (thread + composer + disabled Router CTA row) wired to the api WebSocket at `ws://{hostname}:8000/ws`, with Soft Sage `--lingua-*` tokens on the **primary chat surface only** (FR-15 **T0–T1** chat slice).
 
-## Development server
+**Not claimed:** full FR-15 / SM-8 (Tutor / Vocabulary / Review claim surfaces, theme toggle chrome, empty/refuse checklist beyond chat network-fail / paste-too-long).
 
-To start a local development server, run:
+## Local URLs
 
-```bash
-ng serve
-```
+| Surface                                          | URL                                                          |
+| ------------------------------------------------ | ------------------------------------------------------------ |
+| Chat UI                                          | http://127.0.0.1:4200/                                       |
+| Learner WebSocket (direct; no nginx `/ws` proxy) | `ws://{hostname}:8000/ws` (default `ws://127.0.0.1:8000/ws`) |
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+Compose production `web` still proxies `/api/` only — do not expect `/ws` through nginx.
 
-## Code scaffolding
+## Design tokens
 
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
+- Token file: `src/styles/tokens.css` (imported from `src/styles.css`)
+- Theme: default `data-theme="light"` on `<html>`; dark overrides the same `--lingua-*` names (`data-theme="dark"` — DevTools spot-check; toggle deferred)
+- Fonts: self-hosted Literata + Source Sans 3 under `public/fonts/` (Compose offline-friendly; no CDN)
 
-```bash
-ng generate component component-name
-```
-
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
-
-```bash
-ng generate --help
-```
-
-## Building
-
-To build the project run:
+## Development
 
 ```bash
-ng build
+npm ci
+npm start          # ng serve → :4200
 ```
 
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
-
-## Running unit tests
-
-To execute unit tests with the [Vitest](https://vitest.dev/) test runner, use the following command:
+Quality gates:
 
 ```bash
-ng test
+npm run lint
+npm run format:check
+npm run typecheck
+npm test           # ng test --watch=false
 ```
 
-## Running end-to-end tests
+## Compose
 
-For end-to-end (e2e) testing, run:
+Default Compose `web` serves a **production** static build. After changing this app, rebuild the image:
 
 ```bash
-ng e2e
+docker compose build web && docker compose up
 ```
 
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+Or use the `web-dev` profile / host `npm start` for HMR (see root README).
