@@ -1,0 +1,3 @@
+# ADR: Blank turn skips LLM but still writes STM snapshot
+
+Story 1.5 defined the learner WebSocket turn skeleton before domain agents. The plan (`story-websocket-turn-skeleton-with-llm-adapter-and-cta-plan.md`) decided that after Unicode-aware strip, empty `turn_request` text (including whitespace-only) returns the same CTA-shaped `turn_complete` **without** calling the LLM, while the Router still writes the thin checkpointer snapshot `{last_user_text, active_agent: null, turn_at}` under the MVP `thread_id` (commit `0dd45a5`). The why in the plan: FR-6 blank rule must not burn LLM budget, but STM SoT must still record the blank turn so later agents see an honest last-user state rather than a silent no-op.
