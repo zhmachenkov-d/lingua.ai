@@ -1,0 +1,3 @@
+# ADR: Unauthenticated singleton learner WebSocket with HTTP 409
+
+Story 1.5 introduced the learner turn path before multi-user auth and domain agents. The plan (`story-websocket-turn-skeleton-with-llm-adapter-and-cta-plan.md`) decided on a single unauthenticated `GET /ws` upgrade for the MVP singleton learner, rejecting a second concurrent upgrade with HTTP 409 Conflict and allowing at most one in-flight turn per connection (commit `0dd45a5`). The why in the plan: MVP identity is one learner (`MVP_LEARNER_ID`); WS auth/origin policy and multi-user sessions are out of this story; the 409 gate makes the C2 single-socket assumption enforceable without inventing auth.

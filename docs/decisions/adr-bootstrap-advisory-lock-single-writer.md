@@ -1,0 +1,3 @@
+# ADR: Bootstrap under Postgres advisory lock (single-writer)
+
+Story 1.2 needed Alembic LTM migrations and LangGraph `AsyncPostgresSaver.setup()` on the shared Compose Postgres without a separate operator CLI. The plan (`story-memory-plane-checkpointer-and-ltm-schemas-plan.md`) decided that api lifespan runs both steps inside one critical section under a Postgres advisory lock, with bounded lock wait and loud fail on timeout, and that MVP assumes a single api replica as migrator (commit `1c372b0`). The why in the plan: concurrent startups must not interleave upgrade and setup, Session/checkpointer SoT rules stay intact, and operators are not required to run migrations by hand.
