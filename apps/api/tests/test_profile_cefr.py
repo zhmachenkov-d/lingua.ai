@@ -1,12 +1,16 @@
 """LearnerProfile CEFR write path — integration_db round-trips (story 1.4)."""
 
+import asyncio
 from collections.abc import Iterator
 
 import psycopg
 import pytest
+from app.db.bootstrap import bootstrap
 from app.db.constants import MVP_LEARNER_ID
+from app.db.session import dispose_engine
 from app.main import app
 from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 
 def _profile_count(url: str) -> int:
@@ -181,3 +185,33 @@ def test_put_does_not_wipe_other_profile_columns(
     assert dict(row[0]) == {"overall": "B1"}
     assert list(row[1]) == ["fluency"]
     assert dict(row[2]) == {"max_minutes": 20}
+
+
+@pytest.mark.integration_db
+def test_concurrent_first_puts_neither_unique_violation(
+    fresh_db_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two overlapping first PUTs must not 500 on PK conflict."""
+    monkeypatch.setenv("DATABASE_URL", fresh_db_url)
+    body_a = {"overall": "A1"}
+    body_b = {"overall": "B1", "vocab": "A2"}
+
+    async def race() -> tuple[int, int]:
+        await bootstrap(fresh_db_url)
+        try:
+            transport = ASGITransport(app=app)
+            async with AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as client:
+                r1, r2 = await asyncio.gather(
+                    client.put("/profile/cefr", json=body_a),
+                    client.put("/profile/cefr", json=body_b),
+                )
+                return r1.status_code, r2.status_code
+        finally:
+            await dispose_engine()
+
+    assert asyncio.run(race()) == (204, 204)
+    assert _profile_count(fresh_db_url) == 1
+    stored = _cefr_raw(fresh_db_url)
+    assert stored in (body_a, body_b)
