@@ -14,6 +14,9 @@ from app.schemas.ws import ErrorEvent, TurnCompleteEvent
 
 router = APIRouter(tags=["ws"])
 
+# Align with apps/web MAX_MESSAGE_LENGTH (chat.copy.ts).
+MAX_TURN_TEXT_LENGTH = 2000
+
 # At most one active /ws for the MVP learner (C2).
 _ws_lock = asyncio.Lock()
 _ws_occupied = False
@@ -76,6 +79,8 @@ def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
         return _invalid_error(turn_id=turn_id)
     text = data.get("text")
     if not isinstance(text, str):
+        return _invalid_error(turn_id=turn_id)
+    if len(text) > MAX_TURN_TEXT_LENGTH:
         return _invalid_error(turn_id=turn_id)
     return text, turn_id
 

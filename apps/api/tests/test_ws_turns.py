@@ -267,6 +267,41 @@ def test_invalid_inbound_does_not_call_llm(client: TestClient) -> None:
     assert event["code"] == "invalid_turn_request"
 
 
+def test_over_limit_text_rejected_without_llm(client: TestClient) -> None:
+    over = "x" * (ws_mod.MAX_TURN_TEXT_LENGTH + 1)
+    with patch("app.api.routes.ws.handle_turn", new_callable=AsyncMock) as mocked:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"kind": "turn_request", "text": over, "turn_id": "too-long"})
+            event = ws.receive_json()
+    mocked.assert_not_awaited()
+    assert event["kind"] == "error"
+    assert event["code"] == "invalid_turn_request"
+    assert event["turn_id"] == "too-long"
+
+
+def test_at_limit_text_follows_turn_path(client: TestClient) -> None:
+    at_limit = "y" * ws_mod.MAX_TURN_TEXT_LENGTH
+    with patch(
+        "app.api.routes.ws.handle_turn",
+        new_callable=AsyncMock,
+        return_value=_cta_success(turn_id="at-limit"),
+    ) as mocked:
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json(
+                {
+                    "kind": "turn_request",
+                    "text": at_limit,
+                    "turn_id": "at-limit",
+                }
+            )
+            event = ws.receive_json()
+    mocked.assert_awaited_once()
+    assert mocked.await_args is not None
+    assert mocked.await_args.args[0] == at_limit
+    assert event["kind"] == "turn_complete"
+    assert event["turn_id"] == "at-limit"
+
+
 def test_handle_turn_blank_no_llm() -> None:
     with (
         patch("app.router.turn.classify_turn", new_callable=AsyncMock) as classify,
