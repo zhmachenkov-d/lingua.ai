@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from app.llm.adapter import (
     BACKUP_NOTICE,
@@ -16,7 +17,6 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
-import httpx
 from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 
@@ -85,7 +85,9 @@ def test_both_down_raises_unavailable() -> None:
 
 
 def _status_error(status_code: int) -> APIStatusError:
-    response = httpx.Response(status_code, request=httpx.Request("POST", "https://api.deepseek.com"))
+    response = httpx.Response(
+        status_code, request=httpx.Request("POST", "https://api.deepseek.com")
+    )
     return APIStatusError(f"HTTP {status_code}", response=response, body=None)
 
 
