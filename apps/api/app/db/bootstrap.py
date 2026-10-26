@@ -7,7 +7,9 @@ when the holding connection ends, so a crashed holder never leaves a stale lock.
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any
 
 import psycopg
 from alembic import command
@@ -23,7 +25,9 @@ BOOTSTRAP_LOCK_KEY = 7_265_300_117_001
 LOCK_TIMEOUT_SECONDS = 60.0
 LOCK_POLL_SECONDS = 0.25
 CONNECT_TIMEOUT_SECONDS = 10
-# Bound work under the lock so a hung migrate/setup cannot pin peers forever.
+# Work timeout fails startup loudly, but the lock is held until the in-flight
+# migrate/setup worker finishes (_drain). A hung worker pins the lock until the
+# process/session dies; peers are bounded by LOCK_TIMEOUT_SECONDS.
 WORK_TIMEOUT_SECONDS = 120.0
 
 
@@ -60,6 +64,50 @@ async def run_alembic_upgrade(database_url: str) -> None:
 
 async def run_checkpointer_setup(database_url: str) -> None:
     await setup_checkpointer(database_url)
+
+
+async def _drain(task: asyncio.Future[Any]) -> None:
+    """Wait for ``task`` to finish; interrupt/cancel is re-raised after."""
+    pending: BaseException | None = None
+    while not task.done():
+        try:
+            await asyncio.wait({task})
+        except BaseException as exc:
+            # Keep joining so bootstrap's finally cannot unlock while work runs.
+            pending = exc
+    if not task.cancelled():
+        task.exception()  # mark retrieved; the caller reports its own error
+    if pending is not None:
+        raise pending
+
+
+async def _run_under_lock(work: Awaitable[None], what: str) -> None:
+    """Run ``work`` bounded by WORK_TIMEOUT_SECONDS without ever abandoning it.
+
+    ``wait_for`` cancelling the awaiter does not stop an Alembic thread, and the
+    caller's ``finally`` releases the advisory lock. So the work runs as a shielded
+    task and, on timeout (or cancel), is joined before returning control: the lock
+    stays held until the in-flight worker has actually finished.
+    """
+    task = asyncio.ensure_future(work)
+    try:
+        await asyncio.wait_for(asyncio.shield(task), timeout=WORK_TIMEOUT_SECONDS)
+    except TimeoutError as exc:
+        if task.done():
+            # Finished at the deadline (or raised TimeoutError itself): use its
+            # real outcome, not wait_for's TimeoutError.
+            task.result()
+            return
+        logger.warning(
+            "bootstrap: %s exceeded work timeout; holding lock until it finishes", what
+        )
+        await _drain(task)
+        raise BootstrapWorkTimeout(
+            f"{what} exceeded {WORK_TIMEOUT_SECONDS:g}s under lock"
+        ) from exc
+    except BaseException:
+        await _drain(task)
+        raise
 
 
 async def _acquire_lock(conn: psycopg.AsyncConnection, timeout: float) -> None:
@@ -108,26 +156,14 @@ async def bootstrap(
         await _acquire_lock(conn, timeout)
         logger.info("bootstrap: lock acquired; running alembic upgrade head")
         try:
-            await asyncio.wait_for(
-                run_alembic_upgrade(url), timeout=WORK_TIMEOUT_SECONDS
-            )
-        except TimeoutError as exc:
-            raise BootstrapWorkTimeout(
-                f"alembic upgrade exceeded {WORK_TIMEOUT_SECONDS:g}s under lock"
-            ) from exc
+            await _run_under_lock(run_alembic_upgrade(url), "alembic upgrade")
         except BootstrapError:
             raise
         except Exception as exc:
             raise BootstrapError(f"alembic upgrade failed: {exc}") from exc
         logger.info("bootstrap: running checkpointer setup")
         try:
-            await asyncio.wait_for(
-                run_checkpointer_setup(url), timeout=WORK_TIMEOUT_SECONDS
-            )
-        except TimeoutError as exc:
-            raise BootstrapWorkTimeout(
-                f"checkpointer setup exceeded {WORK_TIMEOUT_SECONDS:g}s under lock"
-            ) from exc
+            await _run_under_lock(run_checkpointer_setup(url), "checkpointer setup")
         except BootstrapError:
             raise
         except Exception as exc:
