@@ -55,13 +55,9 @@ def test_router_checkpointer_round_trip(migrated_url: str) -> None:
 
 @pytest.mark.integration_db
 def test_channel_versions_monotonic_across_turns(migrated_url: str) -> None:
-    asyncio.run(
-        write_turn_snapshot(last_user_text="first", database_url=migrated_url)
-    )
+    asyncio.run(write_turn_snapshot(last_user_text="first", database_url=migrated_url))
     first = asyncio.run(_channel_versions(migrated_url))
-    asyncio.run(
-        write_turn_snapshot(last_user_text="second", database_url=migrated_url)
-    )
+    asyncio.run(write_turn_snapshot(last_user_text="second", database_url=migrated_url))
     second = asyncio.run(_channel_versions(migrated_url))
     tip = asyncio.run(get_turn_snapshot(database_url=migrated_url))
     assert tip is not None
