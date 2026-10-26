@@ -193,7 +193,9 @@ describe('ChatShell', () => {
     expect(shell['inFlight']()).toBe(true);
     expect(shell['composerDisabled']).toBe(true);
     expect(shell['bubbles']().length).toBe(beforeBubbles);
+    expect(shell['ctas']()).toEqual([]);
     expect(fixture.nativeElement.textContent).not.toContain('stale complete');
+    expect(fixture.nativeElement.textContent).not.toContain('Tutor');
 
     latestSocket!.simulateMessage({
       kind: 'turn_complete',
@@ -207,7 +209,9 @@ describe('ChatShell', () => {
 
     expect(shell['inFlight']()).toBe(true);
     expect(shell['bubbles']().length).toBe(beforeBubbles);
+    expect(shell['ctas']()).toEqual([]);
     expect(fixture.nativeElement.textContent).not.toContain('no id complete');
+    expect(fixture.nativeElement.textContent).not.toContain('Tutor');
   });
 
   it('keeps in-flight on error with mismatched or missing turn_id', () => {
