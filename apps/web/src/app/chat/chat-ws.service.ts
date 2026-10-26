@@ -1,20 +1,14 @@
 import { DestroyRef, Injectable, inject, signal } from '@angular/core';
 import { Subject } from 'rxjs';
 
-import type { ErrorCode, ServerEvent, TurnRequest } from './chat.types';
+import type { ServerEvent, TurnRequest } from './chat.types';
 import { WEB_SOCKET_FACTORY, WS_URL } from './chat-ws.tokens';
-
-const ERROR_CODES = new Set<string>([
-  'llm_misconfigured',
-  'llm_unavailable',
-  'invalid_turn_request',
-  'checkpointer_write_failed',
-]);
 
 export type ChatWsConnectionState = 'idle' | 'connecting' | 'open' | 'failed';
 
 /**
- * Single-socket AD-6 client. Emits parsed server events; ignores malformed frames.
+ * Single-socket AD-6 client. Emits parsed server events.
+ * Malformed frames notify `undeliverable$` so an in-flight turn can recover.
  * `token_delta` is parsed and forwarded so callers can ignore without bubbling UI.
  */
 @Injectable({ providedIn: 'root' })
@@ -28,6 +22,10 @@ export class ChatWsService {
 
   private readonly eventsSubject = new Subject<ServerEvent>();
   readonly events$ = this.eventsSubject.asObservable();
+
+  private readonly undeliverableSubject = new Subject<void>();
+  /** Fired when a socket message could not be parsed into a ServerEvent. */
+  readonly undeliverable$ = this.undeliverableSubject.asObservable();
 
   readonly connectionState = signal<ChatWsConnectionState>('idle');
 
@@ -71,6 +69,8 @@ export class ChatWsService {
       const parsed = parseServerEvent(event.data);
       if (parsed) {
         this.eventsSubject.next(parsed);
+      } else {
+        this.undeliverableSubject.next();
       }
     });
 
@@ -157,14 +157,15 @@ export function parseServerEvent(raw: string): ServerEvent | null {
   if (kind === 'error') {
     const message = (data as { message?: unknown }).message;
     const code = (data as { code?: unknown }).code;
-    if (typeof message !== 'string' || typeof code !== 'string' || !ERROR_CODES.has(code)) {
+    // Accept any string code — unknown codes must still clear in-flight in the shell.
+    if (typeof message !== 'string' || typeof code !== 'string' || code.length === 0) {
       return null;
     }
     const turnId = (data as { turn_id?: unknown }).turn_id;
     return {
       kind: 'error',
       message,
-      code: code as ErrorCode,
+      code,
       turn_id: typeof turnId === 'string' ? turnId : null,
     };
   }

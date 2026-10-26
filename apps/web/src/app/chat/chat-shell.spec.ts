@@ -2,7 +2,13 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
 import { ChatShell } from './chat-shell';
-import { MAX_MESSAGE_LENGTH, NETWORK_FAIL, PASTE_TOO_LONG, SOON_LABEL } from './chat.copy';
+import {
+  MAX_MESSAGE_LENGTH,
+  NETWORK_FAIL,
+  PASTE_TOO_LONG,
+  SOON_LABEL,
+  UNPARSEABLE_FRAME,
+} from './chat.copy';
 import { WEB_SOCKET_FACTORY, WS_URL } from './chat-ws.tokens';
 import { MockWebSocket } from './mock-web-socket';
 
@@ -143,6 +149,65 @@ describe('ChatShell', () => {
       'Языковая модель сейчас недоступна. Попробуйте позже.',
     );
     expect(shell['composerDisabled']).toBe(false);
+  });
+
+  it('clears in-flight on unknown-code error and re-enables composer', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('x');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'Unexpected failure',
+      code: 'future_code',
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('Unexpected failure');
+    expect(shell['composerDisabled']).toBe(false);
+  });
+
+  it('clears in-flight on malformed frame while waiting for a terminal event', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('x');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+
+    latestSocket!.simulateMessage('not-json');
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain(UNPARSEABLE_FRAME);
+    expect(shell['composerDisabled']).toBe(false);
+  });
+
+  it('clears in-flight on terminal-shaped frames that fail parse', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('x');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+
+    // turn_complete without ctas → parse null → undeliverable$
+    latestSocket!.simulateMessage({ kind: 'turn_complete', message: 'incomplete' });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain(UNPARSEABLE_FRAME);
+    expect(shell['composerDisabled']).toBe(false);
+  });
+
+  it('ignores undeliverable frames when no turn is in flight', () => {
+    const shell = fixture.componentInstance;
+    const before = shell['bubbles']().length;
+
+    latestSocket!.simulateMessage('not-json');
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['bubbles']().length).toBe(before);
+    expect(fixture.nativeElement.textContent).not.toContain(UNPARSEABLE_FRAME);
   });
 
   it('renders blank-path server message as-is (no client blank-input rewrite)', () => {

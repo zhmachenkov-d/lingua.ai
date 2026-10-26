@@ -2,6 +2,8 @@
 
 export const PASTE_TOO_LONG = 'Слишком длинное сообщение. Сократи текст.';
 export const NETWORK_FAIL = 'Нет связи. Проверь интернет и попробуй снова.';
+export const UNPARSEABLE_FRAME =
+  'Не удалось обработать ответ сервера. Попробуй ещё раз.';
 export const RETRY_LABEL = 'Повторить';
 export const SOON_LABEL = 'Скоро';
 export const COMPOSER_PLACEHOLDER = 'Напиши сообщение…';

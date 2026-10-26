@@ -11,6 +11,7 @@ import {
   RETRY_LABEL,
   SEND_LABEL,
   SOON_LABEL,
+  UNPARSEABLE_FRAME,
 } from './chat.copy';
 import { ChatWsService } from './chat-ws.service';
 import { mapCtaIds } from './cta-labels';
@@ -55,6 +56,9 @@ export class ChatShell implements OnInit {
   ngOnInit(): void {
     this.ws.events$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe((event) => {
       this.onServerEvent(event);
+    });
+    this.ws.undeliverable$.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
+      this.onUndeliverableFrame();
     });
     this.ws.connect();
   }
@@ -126,6 +130,16 @@ export class ChatShell implements OnInit {
       this.appendBubble({ role: 'system', text: event.message });
       this.ctas.set([]);
     }
+  }
+
+  /** Recover from dropped/malformed frames only while a turn is waiting on a terminal event. */
+  private onUndeliverableFrame(): void {
+    if (!this.inFlight()) {
+      return;
+    }
+    this.inFlight.set(false);
+    this.appendBubble({ role: 'system', text: UNPARSEABLE_FRAME });
+    this.ctas.set([]);
   }
 
   private clearInFlightAndShowNetworkFail(): void {
