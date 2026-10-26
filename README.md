@@ -113,15 +113,15 @@ Or on the host: `cd apps/web && npm start` (port 4200). Do not run `web` and `we
 On startup the `api` prepares the shared Postgres itself — no separate migration CLI. In one critical section (FastAPI lifespan, `app/db/bootstrap.py`):
 
 1. acquire Postgres advisory lock `7265300117001` (session-level, polled; waits at most **60 s**; connect uses a **10 s** TCP timeout and keepalives so the lock session stays up while Alembic uses a separate connection)
-2. `alembic upgrade head` — learner LTM (`LearnerProfile`, `VocabularyItem` incl. FSRS fields, `ReviewRecord`, `ErrorLog`) plus the `session` mirror table (bounded **120 s** under the lock)
-3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; also bounded **120 s**)
-4. release the lock — only after steps 2 and 3 have actually finished; a work timeout still fails startup loudly, but the lock is held until the in-flight migrate/setup worker ends (a hung worker pins it until the process or session dies)
+2. `alembic upgrade head` — learner LTM (`LearnerProfile`, `VocabularyItem` incl. FSRS fields, `ReviewRecord`, `ErrorLog`) plus the `session` mirror table (loud fail if the step exceeds **120 s**; lock still held until that in-flight work finishes)
+3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; same **120 s** loud-fail bound; lock held through drain)
+4. release the lock — after both steps have returned (or after the timed-out step’s worker finishes when step 2 fails the bound and step 3 never starts). A work timeout fails startup loudly without abandoning in-flight work; a hung worker pins the lock until the process or session dies
 
 Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If `DATABASE_URL` is missing, Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
 
 **Single-writer MVP:** one `api` replica is the migrator. The advisory lock serializes concurrent starts (the second waits, then re-runs the idempotent sequence), but multi-replica migration orchestration is out of scope. Alembic downgrade is out of scope.
 
-**Stuck lock / dead holder:** advisory locks are released when the holding Postgres session ends, so a crashed api frees the lock. If a second api times out waiting, check for a live holder (`SELECT pid, state, query FROM pg_stat_activity WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype='advisory');`), then restart the failed api once the holder exits or is terminated.
+**Stuck lock / live or dead holder:** advisory locks are released when the holding Postgres session ends, so a crashed api frees the lock. A live holder may still be draining a timed-out migrate/setup worker (peers wait up to the lock-wait bound, then see lock timeout). If a second api times out waiting, check for a live holder (`SELECT pid, state, query FROM pg_stat_activity WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype='advisory');`), then restart the failed api once the holder exits or is terminated.
 
 **Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9).
 

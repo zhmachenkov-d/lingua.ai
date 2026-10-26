@@ -7,7 +7,9 @@ when the holding connection ends, so a crashed holder never leaves a stale lock.
 import asyncio
 import logging
 import time
+from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any
 
 import psycopg
 from alembic import command
@@ -64,21 +66,22 @@ async def run_checkpointer_setup(database_url: str) -> None:
     await setup_checkpointer(database_url)
 
 
-async def _drain(task: asyncio.Future) -> None:
-    """Wait for ``task`` to finish; a cancel during the wait is re-raised after."""
-    cancelled = False
+async def _drain(task: asyncio.Future[Any]) -> None:
+    """Wait for ``task`` to finish; interrupt/cancel is re-raised after."""
+    pending: BaseException | None = None
     while not task.done():
         try:
             await asyncio.wait({task})
-        except asyncio.CancelledError:
-            cancelled = True
+        except BaseException as exc:
+            # Keep joining so bootstrap's finally cannot unlock while work runs.
+            pending = exc
     if not task.cancelled():
         task.exception()  # mark retrieved; the caller reports its own error
-    if cancelled:
-        raise asyncio.CancelledError
+    if pending is not None:
+        raise pending
 
 
-async def _run_under_lock(work, what: str) -> None:
+async def _run_under_lock(work: Awaitable[None], what: str) -> None:
     """Run ``work`` bounded by WORK_TIMEOUT_SECONDS without ever abandoning it.
 
     ``wait_for`` cancelling the awaiter does not stop an Alembic thread, and the
