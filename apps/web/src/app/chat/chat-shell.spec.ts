@@ -137,10 +137,12 @@ describe('ChatShell', () => {
     const shell = fixture.componentInstance;
     shell['draft'].set('x');
     shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
     latestSocket!.simulateMessage({
       kind: 'error',
       message: 'Языковая модель сейчас недоступна. Попробуйте позже.',
       code: 'llm_unavailable',
+      turn_id: frame.turn_id,
     });
     fixture.detectChanges();
 
@@ -156,17 +158,87 @@ describe('ChatShell', () => {
     shell['draft'].set('x');
     shell['send']();
     expect(shell['inFlight']()).toBe(true);
+    const frame = JSON.parse(latestSocket!.sent[0]!);
 
     latestSocket!.simulateMessage({
       kind: 'error',
       message: 'Unexpected failure',
       code: 'future_code',
+      turn_id: frame.turn_id,
     });
     fixture.detectChanges();
 
     expect(shell['inFlight']()).toBe(false);
     expect(fixture.nativeElement.textContent).toContain('Unexpected failure');
     expect(shell['composerDisabled']).toBe(false);
+  });
+
+  it('keeps in-flight on turn_complete with mismatched or missing turn_id', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('pending');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+    const beforeBubbles = shell['bubbles']().length;
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'stale complete',
+      ctas: ['tutor'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: 'other-turn',
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(true);
+    expect(shell['composerDisabled']).toBe(true);
+    expect(shell['bubbles']().length).toBe(beforeBubbles);
+    expect(fixture.nativeElement.textContent).not.toContain('stale complete');
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'no id complete',
+      ctas: ['tutor'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: null,
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(true);
+    expect(shell['bubbles']().length).toBe(beforeBubbles);
+    expect(fixture.nativeElement.textContent).not.toContain('no id complete');
+  });
+
+  it('keeps in-flight on error with mismatched or missing turn_id', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('pending');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+    const beforeBubbles = shell['bubbles']().length;
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'overlap',
+      code: 'invalid_turn_request',
+      turn_id: 'foreign',
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(true);
+    expect(shell['bubbles']().length).toBe(beforeBubbles);
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'no id',
+      code: 'llm_unavailable',
+      turn_id: null,
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(true);
+    expect(shell['composerDisabled']).toBe(true);
+    expect(shell['bubbles']().length).toBe(beforeBubbles);
   });
 
   it('clears in-flight on malformed frame while waiting for a terminal event', () => {
@@ -224,6 +296,7 @@ describe('ChatShell', () => {
       ctas: ['tutor', 'vocabulary', 'review'],
       clarify: null,
       backup_notice: null,
+      turn_id: frame.turn_id,
     });
     fixture.detectChanges();
 

@@ -39,6 +39,8 @@ export class ChatShell implements OnInit {
   protected readonly bubbles = signal<ChatBubble[]>([]);
   protected readonly ctas = signal<CtaChip[]>([]);
   protected readonly inFlight = signal(false);
+  /** Client turn_id of the send waiting on a terminal event; null when idle. */
+  private pendingTurnId: string | null = null;
   protected readonly localError = signal<string | null>(null);
   protected readonly showNetworkFail = signal(false);
 
@@ -97,6 +99,7 @@ export class ChatShell implements OnInit {
       this.appendBubble({ role: 'outbound', text });
     }
     this.draft.set('');
+    this.pendingTurnId = turnId;
     this.inFlight.set(true);
     this.ctas.set([]);
   }
@@ -104,7 +107,7 @@ export class ChatShell implements OnInit {
   protected retryConnection(): void {
     this.showNetworkFail.set(false);
     this.localError.set(null);
-    this.inFlight.set(false);
+    this.clearPendingTurn();
     this.ws.retry();
   }
 
@@ -115,7 +118,10 @@ export class ChatShell implements OnInit {
     }
 
     if (event.kind === 'turn_complete') {
-      this.inFlight.set(false);
+      if (this.isForeignTerminal(event.turn_id)) {
+        return;
+      }
+      this.clearPendingTurn();
       // Server message as-is (including blank → server CTA_MESSAGE; no client rewrite).
       this.appendBubble({ role: 'inbound', text: event.message });
       if (event.backup_notice) {
@@ -126,10 +132,23 @@ export class ChatShell implements OnInit {
     }
 
     if (event.kind === 'error') {
-      this.inFlight.set(false);
+      if (this.isForeignTerminal(event.turn_id)) {
+        return;
+      }
+      this.clearPendingTurn();
       this.appendBubble({ role: 'system', text: event.message });
       this.ctas.set([]);
     }
+  }
+
+  /** True when a pending send exists and this terminal's turn_id is not that pending id. */
+  private isForeignTerminal(turnId: string | null | undefined): boolean {
+    return this.pendingTurnId !== null && turnId !== this.pendingTurnId;
+  }
+
+  private clearPendingTurn(): void {
+    this.pendingTurnId = null;
+    this.inFlight.set(false);
   }
 
   /** Recover from dropped/malformed frames only while a turn is waiting on a terminal event. */
@@ -137,13 +156,13 @@ export class ChatShell implements OnInit {
     if (!this.inFlight()) {
       return;
     }
-    this.inFlight.set(false);
+    this.clearPendingTurn();
     this.appendBubble({ role: 'system', text: UNPARSEABLE_FRAME });
     this.ctas.set([]);
   }
 
   private clearInFlightAndShowNetworkFail(): void {
-    this.inFlight.set(false);
+    this.clearPendingTurn();
     this.showNetworkFail.set(true);
   }
 
