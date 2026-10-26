@@ -57,9 +57,10 @@ export class MockWebSocket {
     this.emit('open', new Event('open'));
   }
 
-  /** Test helper: deliver a JSON server frame. */
+  /** Test helper: deliver a server frame. Objects are JSON-encoded; strings are raw wire data. */
   simulateMessage(payload: unknown): void {
-    this.emit('message', new MessageEvent('message', { data: JSON.stringify(payload) }));
+    const data = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    this.emit('message', new MessageEvent('message', { data }));
   }
 
   /** Test helper: abnormal close (connect fail / 409 / mid-turn death). */

@@ -1,9 +1,17 @@
-/** AD-6 WebSocket envelopes — mirrors apps/api/app/schemas/ws.py. */
+/**
+ * AD-6 WebSocket envelopes — shapes align with apps/api/app/schemas/ws.py.
+ * Client `ErrorCode` accepts unknown wire strings so contract drift cannot stick in-flight;
+ * the api schema remains a closed Literal.
+ */
 
 export type TurnRequestKind = 'turn_request';
 
 export type ErrorCode =
-  'llm_misconfigured' | 'llm_unavailable' | 'invalid_turn_request' | 'checkpointer_write_failed';
+  | 'llm_misconfigured'
+  | 'llm_unavailable'
+  | 'invalid_turn_request'
+  | 'checkpointer_write_failed'
+  | (string & {});
 
 export interface TurnRequest {
   kind: TurnRequestKind;

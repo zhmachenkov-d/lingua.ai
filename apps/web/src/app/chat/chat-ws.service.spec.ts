@@ -37,6 +37,45 @@ describe('parseServerEvent', () => {
     expect(parseServerEvent('not-json')).toBeNull();
     expect(parseServerEvent(JSON.stringify({ kind: 'turn_complete' }))).toBeNull();
   });
+
+  it('parses error with a known code', () => {
+    const event = parseServerEvent(
+      JSON.stringify({
+        kind: 'error',
+        message: 'Языковая модель сейчас недоступна. Попробуйте позже.',
+        code: 'llm_unavailable',
+        turn_id: 't1',
+      }),
+    );
+    expect(event).toEqual({
+      kind: 'error',
+      message: 'Языковая модель сейчас недоступна. Попробуйте позже.',
+      code: 'llm_unavailable',
+      turn_id: 't1',
+    });
+  });
+
+  it('parses error with an unknown code (does not drop)', () => {
+    const event = parseServerEvent(
+      JSON.stringify({
+        kind: 'error',
+        message: 'Unexpected failure',
+        code: 'future_code',
+        turn_id: 't1',
+      }),
+    );
+    expect(event).toEqual({
+      kind: 'error',
+      message: 'Unexpected failure',
+      code: 'future_code',
+      turn_id: 't1',
+    });
+  });
+
+  it('returns null for error missing message or empty code', () => {
+    expect(parseServerEvent(JSON.stringify({ kind: 'error', code: 'llm_unavailable' }))).toBeNull();
+    expect(parseServerEvent(JSON.stringify({ kind: 'error', message: 'x', code: '' }))).toBeNull();
+  });
 });
 
 describe('ChatWsService', () => {
@@ -89,5 +128,29 @@ describe('ChatWsService', () => {
     service.retry();
     expect(latestSocket).not.toBe(first);
     expect(service.connectionState()).toBe('connecting');
+  });
+
+  it('emits undeliverable$ for malformed frames and events$ for unknown-code errors', () => {
+    const service = TestBed.inject(ChatWsService);
+    const events: unknown[] = [];
+    const undeliverable: number[] = [];
+    service.events$.subscribe((e) => events.push(e));
+    service.undeliverable$.subscribe(() => undeliverable.push(1));
+
+    service.connect();
+    latestSocket!.simulateOpen();
+    latestSocket!.simulateMessage('not-json');
+    expect(undeliverable).toHaveLength(1);
+    expect(events).toHaveLength(0);
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'Unexpected',
+      code: 'future_code',
+    });
+    expect(events).toEqual([
+      { kind: 'error', message: 'Unexpected', code: 'future_code', turn_id: null },
+    ]);
+    expect(undeliverable).toHaveLength(1);
   });
 });
