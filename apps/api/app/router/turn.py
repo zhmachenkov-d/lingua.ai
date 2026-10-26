@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
+from langgraph.checkpoint.base.id import uuid6
 from openai import AsyncOpenAI
 
 from app.db.checkpointer import open_checkpointer
@@ -58,23 +59,48 @@ def _checkpoint_for_snapshot(
     *,
     last_user_text: str,
     turn_at: str,
-) -> tuple[dict[str, Any], dict[str, str]]:
+    channel_versions: dict[str, str],
+) -> dict[str, Any]:
     channel_values: dict[str, Any] = {
         "last_user_text": last_user_text,
         "active_agent": None,
         "turn_at": turn_at,
     }
-    channel_versions = {key: "1" for key in channel_values}
-    checkpoint: dict[str, Any] = {
+    return {
         "v": 4,
-        "id": str(uuid.uuid4()),
+        # uuid6 is time-ordered; aget tips via ORDER BY checkpoint_id DESC.
+        "id": str(uuid6()),
         "ts": turn_at,
         "channel_values": channel_values,
         "channel_versions": channel_versions,
         "versions_seen": {},
         "updated_channels": list(channel_values),
     }
-    return checkpoint, channel_versions
+
+
+def _next_channel_versions(
+    saver: Any,
+    prior: Mapping[str, Any] | None,
+    channels: tuple[str, ...],
+) -> dict[str, str]:
+    """Advance versions via saver.get_next_version (Postgres: zero-padded str)."""
+    raw = prior.get("channel_versions") if prior else None
+    prior_versions = raw if isinstance(raw, dict) else {}
+    versions: dict[str, str] = {}
+    for key in channels:
+        current = prior_versions.get(key)
+        # Accept str/int/None; legacy Router used plain "1".
+        if type(current) is bool or (
+            current is not None and not isinstance(current, (str, int))
+        ):
+            current = None
+        try:
+            next_version = saver.get_next_version(current, None)
+        except (TypeError, ValueError, NotImplementedError):
+            next_version = saver.get_next_version(None, None)
+        assert isinstance(next_version, str)
+        versions[key] = next_version
+    return versions
 
 
 async def write_turn_snapshot(
@@ -84,15 +110,27 @@ async def write_turn_snapshot(
 ) -> dict[str, Any]:
     """Persist thin Router STM snapshot. Sole ``aput`` path in the app."""
     turn_at = datetime.now(UTC).isoformat()
-    checkpoint, versions = _checkpoint_for_snapshot(
-        last_user_text=last_user_text,
-        turn_at=turn_at,
-    )
+    channels = ("last_user_text", "active_agent", "turn_at")
     config: dict[str, Any] = {
         "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
     }
-    version_map: dict[str, str | int | float] = dict(versions)
     async with open_checkpointer(database_url) as saver:
+        prior = await saver.aget(config)  # type: ignore[arg-type]
+        versions = _next_channel_versions(saver, prior, channels)
+        checkpoint = _checkpoint_for_snapshot(
+            last_user_text=last_user_text,
+            turn_at=turn_at,
+            channel_versions=versions,
+        )
+        if prior is not None:
+            config = {
+                "configurable": {
+                    "thread_id": THREAD_ID,
+                    "checkpoint_ns": "",
+                    "checkpoint_id": prior["id"],
+                }
+            }
+        version_map: dict[str, str | int | float] = dict(versions)
         await saver.aput(
             config,  # type: ignore[arg-type]
             checkpoint,  # type: ignore[arg-type]
