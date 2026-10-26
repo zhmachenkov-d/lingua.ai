@@ -73,12 +73,8 @@ describe('parseServerEvent', () => {
   });
 
   it('returns null for error missing message or empty code', () => {
-    expect(
-      parseServerEvent(JSON.stringify({ kind: 'error', code: 'llm_unavailable' })),
-    ).toBeNull();
-    expect(
-      parseServerEvent(JSON.stringify({ kind: 'error', message: 'x', code: '' })),
-    ).toBeNull();
+    expect(parseServerEvent(JSON.stringify({ kind: 'error', code: 'llm_unavailable' }))).toBeNull();
+    expect(parseServerEvent(JSON.stringify({ kind: 'error', message: 'x', code: '' }))).toBeNull();
   });
 });
 
