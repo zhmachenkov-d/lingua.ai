@@ -269,13 +269,9 @@ def test_invalid_inbound_does_not_call_llm(client: TestClient) -> None:
 
 def test_over_limit_text_rejected_without_llm(client: TestClient) -> None:
     over = "x" * (ws_mod.MAX_TURN_TEXT_LENGTH + 1)
-    with patch(
-        "app.api.routes.ws.handle_turn", new_callable=AsyncMock
-    ) as mocked:
+    with patch("app.api.routes.ws.handle_turn", new_callable=AsyncMock) as mocked:
         with client.websocket_connect("/ws") as ws:
-            ws.send_json(
-                {"kind": "turn_request", "text": over, "turn_id": "too-long"}
-            )
+            ws.send_json({"kind": "turn_request", "text": over, "turn_id": "too-long"})
             event = ws.receive_json()
     mocked.assert_not_awaited()
     assert event["kind"] == "error"
