@@ -8,6 +8,8 @@ agents must not invent CEFR.
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.constants import MVP_LEARNER_ID
@@ -34,9 +36,13 @@ async def get_cefr(session: SessionDep) -> dict[str, str]:
 async def put_cefr(body: CefrBySkill, session: SessionDep) -> None:
     """Full-replace ``cefr_by_skill`` for the MVP learner; other columns untouched."""
     stored = body.to_stored_map()
-    profile = await session.get(LearnerProfile, MVP_LEARNER_ID)
-    if profile is None:
-        session.add(LearnerProfile(id=MVP_LEARNER_ID, cefr_by_skill=stored))
-    else:
-        profile.cefr_by_skill = stored
+    stmt = (
+        insert(LearnerProfile)
+        .values(id=MVP_LEARNER_ID, cefr_by_skill=stored)
+        .on_conflict_do_update(
+            index_elements=[LearnerProfile.id],
+            set_={"cefr_by_skill": stored, "updated_at": func.now()},
+        )
+    )
+    await session.execute(stmt)
     await session.commit()
