@@ -28,7 +28,7 @@ _CLASSIFY_SYSTEM: Final = (
 
 
 class LlmMisconfigured(Exception):
-    """Missing or empty DEEPSEEK_API_KEY."""
+    """Missing/empty DEEPSEEK_API_KEY, or provider rejected the key (401/403)."""
 
     code: Final = "llm_misconfigured"
 
@@ -102,7 +102,13 @@ async def _try_model(client: AsyncOpenAI, *, model: str, text: str) -> bool:
         return True
     except LlmUnavailable:
         return False
-    except (APITimeoutError, APIConnectionError, APIStatusError, TimeoutError, OSError):
+    except APIStatusError as exc:
+        if exc.status_code in (401, 403):
+            raise LlmMisconfigured(
+                f"provider rejected API key: HTTP {exc.status_code}"
+            ) from exc
+        return False
+    except (APITimeoutError, APIConnectionError, TimeoutError, OSError):
         return False
 
 
@@ -115,7 +121,7 @@ async def classify_turn(
     """Call primary then escalation. Always returns handoff=None on success.
 
     Raises:
-        LlmMisconfigured: empty/unset DEEPSEEK_API_KEY.
+        LlmMisconfigured: empty/unset DEEPSEEK_API_KEY, or provider 401/403.
         LlmUnavailable: both models fail / unreachable / incomplete.
     """
     owns_client = False

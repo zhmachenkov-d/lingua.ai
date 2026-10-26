@@ -16,7 +16,8 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
-from openai import APIConnectionError, APITimeoutError
+import httpx
+from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 
 def _completion(content: str = "none") -> MagicMock:
@@ -78,6 +79,26 @@ def test_both_down_raises_unavailable() -> None:
     client = _client_with_create(
         side_effect=APIConnectionError(request=MagicMock(), message="down")
     )
+    with pytest.raises(LlmUnavailable):
+        asyncio.run(classify_turn("hello", client=client))
+    assert client.chat.completions.create.await_count == 2
+
+
+def _status_error(status_code: int) -> APIStatusError:
+    response = httpx.Response(status_code, request=httpx.Request("POST", "https://api.deepseek.com"))
+    return APIStatusError(f"HTTP {status_code}", response=response, body=None)
+
+
+@pytest.mark.parametrize("status_code", [401, 403])
+def test_auth_status_raises_misconfigured(status_code: int) -> None:
+    client = _client_with_create(side_effect=_status_error(status_code))
+    with pytest.raises(LlmMisconfigured):
+        asyncio.run(classify_turn("hello", client=client))
+    assert client.chat.completions.create.await_count == 1
+
+
+def test_non_auth_status_still_unavailable() -> None:
+    client = _client_with_create(side_effect=_status_error(500))
     with pytest.raises(LlmUnavailable):
         asyncio.run(classify_turn("hello", client=client))
     assert client.chat.completions.create.await_count == 2
