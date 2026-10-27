@@ -67,6 +67,13 @@ def _api_uses_sot(source: str) -> bool:
     return loads and binds is not None and bare_literal is None
 
 
+def test_sot_candidates_docker_layout_skips_shallow_parents() -> None:
+    from app.schemas.ws import _sot_candidates
+
+    paths = _sot_candidates(Path("/app/app/schemas/ws.py"))
+    assert paths == [Path("/app/contracts/max-turn-text-length.json")]
+
+
 def test_max_turn_length_locked_across_api_and_web() -> None:
     sot = _sot_max()
 
