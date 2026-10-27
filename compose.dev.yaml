@@ -28,7 +28,8 @@ services:
 
   api:
     build:
-      context: ./apps/api
+      context: .
+      dockerfile: apps/api/Dockerfile
       network: host
     network_mode: host
     environment:

@@ -4,10 +4,12 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-COPY pyproject.toml ./
-COPY app ./app
-COPY alembic.ini ./
-COPY alembic ./alembic
+COPY apps/api/pyproject.toml ./
+COPY apps/api/app ./app
+COPY apps/api/alembic.ini ./
+COPY apps/api/alembic ./alembic
+# Shared max turn length SoT (canonical file lives under apps/web).
+COPY apps/web/src/app/chat/max-turn-text-length.json ./contracts/max-turn-text-length.json
 
 RUN pip install --no-cache-dir .
 

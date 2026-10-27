@@ -20,7 +20,8 @@ services:
 
   api:
     build:
-      context: ./apps/api
+      context: .
+      dockerfile: apps/api/Dockerfile
       # host network: nested Docker often lacks iptables/NAT DNS for bridge builds
       network: host
     environment:
