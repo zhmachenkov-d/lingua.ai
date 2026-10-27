@@ -259,16 +259,17 @@ async def learner_ws(websocket: WebSocket) -> None:
                 await receive_task
             except asyncio.CancelledError:
                 pass
+        # Drain before close/release: Starlette close() can raise WebSocketDisconnect
+        # (OSError on send), which must not skip cancel/await of in_flight.
+        await _drain_inflight(in_flight, reason=cleanup_reason)
         if (
             websocket.client_state == WebSocketState.CONNECTED
             and websocket.application_state == WebSocketState.CONNECTED
         ):
             try:
                 await websocket.close()
-            except RuntimeError:
+            except (RuntimeError, WebSocketDisconnect):
                 pass
-        # Drain before release on every exit (disconnect and abnormal alike).
-        await _drain_inflight(in_flight, reason=cleanup_reason)
         await _release_ws()
 
 

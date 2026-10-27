@@ -527,10 +527,15 @@ def test_learner_ws_cancel_drains_before_release() -> None:
         ws_mod.reset_ws_gate_for_tests()
         started = asyncio.Event()
         receive_n = 0
+        live_turn: asyncio.Task[TurnSuccess] | None = None
+        release_while_unfinished = False
+        real_release = ws_mod._release_ws
 
         async def sticky_turn(
             *_a: object, turn_id: str | None = None, **_k: object
         ) -> TurnSuccess:
+            nonlocal live_turn
+            live_turn = asyncio.current_task()  # type: ignore[assignment]
             started.set()
             try:
                 await asyncio.sleep(3600)
@@ -538,6 +543,12 @@ def test_learner_ws_cancel_drains_before_release() -> None:
                 await asyncio.sleep(0.05)
                 raise
             return _cta_success(turn_id=turn_id)
+
+        async def tracked_release() -> None:
+            nonlocal release_while_unfinished
+            if live_turn is not None and not live_turn.done():
+                release_while_unfinished = True
+            await real_release()
 
         async def fake_receive() -> dict[str, object]:
             nonlocal receive_n
@@ -564,7 +575,10 @@ def test_learner_ws_cancel_drains_before_release() -> None:
         fake_ws.client_state = WebSocketState.CONNECTED
         fake_ws.application_state = WebSocketState.CONNECTED
 
-        with patch("app.api.routes.ws.handle_turn", side_effect=sticky_turn):
+        with (
+            patch("app.api.routes.ws.handle_turn", side_effect=sticky_turn),
+            patch.object(ws_mod, "_release_ws", tracked_release),
+        ):
             handler = asyncio.create_task(ws_mod.learner_ws(fake_ws))
             for _ in range(100):
                 if started.is_set():
@@ -572,6 +586,71 @@ def test_learner_ws_cancel_drains_before_release() -> None:
                 await asyncio.sleep(0.01)
             assert started.is_set()
             assert not await ws_mod._try_claim_ws()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+        assert live_turn is not None and live_turn.done()
+        assert release_while_unfinished is False
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())
+
+
+def test_learner_ws_close_disconnect_still_drains_and_releases() -> None:
+    """WebSocketDisconnect from close() must not skip drain or occupancy release."""
+
+    async def run() -> None:
+        import json
+
+        from starlette.websockets import WebSocketState
+
+        ws_mod.reset_ws_gate_for_tests()
+        started = asyncio.Event()
+        receive_n = 0
+
+        async def sticky_turn(
+            *_a: object, turn_id: str | None = None, **_k: object
+        ) -> TurnSuccess:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.02)
+                raise
+            return _cta_success(turn_id=turn_id)
+
+        async def fake_receive() -> dict[str, object]:
+            nonlocal receive_n
+            receive_n += 1
+            if receive_n == 1:
+                return {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "kind": "turn_request",
+                            "text": "hello",
+                            "turn_id": "t-close",
+                        }
+                    ),
+                }
+            await asyncio.Event().wait()
+            return {"type": "websocket.disconnect"}
+
+        fake_ws = AsyncMock()
+        fake_ws.accept = AsyncMock()
+        fake_ws.receive = fake_receive
+        fake_ws.send_json = AsyncMock()
+        fake_ws.close = AsyncMock(side_effect=WebSocketDisconnect())
+        fake_ws.client_state = WebSocketState.CONNECTED
+        fake_ws.application_state = WebSocketState.CONNECTED
+
+        with patch("app.api.routes.ws.handle_turn", side_effect=sticky_turn):
+            handler = asyncio.create_task(ws_mod.learner_ws(fake_ws))
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set()
             handler.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await handler
