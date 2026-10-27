@@ -34,6 +34,9 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "llm_unavailable": ("Языковая модель сейчас недоступна. Попробуйте позже."),
     "invalid_turn_request": "Некорректный запрос хода.",
     "checkpointer_write_failed": "Не удалось сохранить состояние сессии.",
+    "ws_already_open": (
+        "Чат уже открыт в другой вкладке. Закройте его и попробуйте снова."
+    ),
 }
 
 THREAD_ID: Final = str(MVP_LEARNER_ID)

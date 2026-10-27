@@ -2,9 +2,10 @@ import { DestroyRef, Injectable, inject, signal } from '@angular/core';
 import { Subject } from 'rxjs';
 
 import type { ServerEvent, TurnRequest } from './chat.types';
+import { WS_ALREADY_OPEN_CLOSE_CODE } from './chat.types';
 import { WEB_SOCKET_FACTORY, WS_URL } from './chat-ws.tokens';
 
-export type ChatWsConnectionState = 'idle' | 'connecting' | 'open' | 'failed';
+export type ChatWsConnectionState = 'idle' | 'connecting' | 'open' | 'failed' | 'conflict';
 
 /**
  * Single-socket AD-6 client. Emits parsed server events.
@@ -19,6 +20,8 @@ export class ChatWsService {
 
   private socket: WebSocket | null = null;
   private intentionalClose = false;
+  /** Set when a `ws_already_open` error frame arrives before the conflict close. */
+  private sawSingletonConflict = false;
 
   private readonly eventsSubject = new Subject<ServerEvent>();
   readonly events$ = this.eventsSubject.asObservable();
@@ -42,6 +45,7 @@ export class ChatWsService {
     }
 
     this.intentionalClose = false;
+    this.sawSingletonConflict = false;
     this.connectionState.set('connecting');
 
     let socket: WebSocket;
@@ -67,28 +71,39 @@ export class ChatWsService {
         return;
       }
       const parsed = parseServerEvent(event.data);
-      if (parsed) {
-        this.eventsSubject.next(parsed);
-      } else {
+      if (!parsed) {
         this.undeliverableSubject.next();
+        return;
       }
+      if (parsed.kind === 'error' && parsed.code === 'ws_already_open') {
+        // Mark conflict immediately so the shell does not treat the rejectee as sendable
+        // before close(4009); close-code path remains a fallback.
+        this.sawSingletonConflict = true;
+        this.connectionState.set('conflict');
+        return;
+      }
+      this.eventsSubject.next(parsed);
     });
 
     socket.addEventListener('error', () => {
       if (this.socket !== socket) {
         return;
       }
-      // Close / fail path finalized in `close` (browsers fire both on 409 / connect fail).
+      // Close / fail path finalized in `close` (browsers fire both on connect fail).
     });
 
-    socket.addEventListener('close', () => {
+    socket.addEventListener('close', (event: CloseEvent) => {
       if (this.socket !== socket) {
         return;
       }
       this.socket = null;
       if (!this.intentionalClose) {
-        this.connectionState.set('failed');
-      } else if (this.connectionState() !== 'failed') {
+        if (this.sawSingletonConflict || event.code === WS_ALREADY_OPEN_CLOSE_CODE) {
+          this.connectionState.set('conflict');
+        } else {
+          this.connectionState.set('failed');
+        }
+      } else if (this.connectionState() !== 'failed' && this.connectionState() !== 'conflict') {
         this.connectionState.set('idle');
       }
     });

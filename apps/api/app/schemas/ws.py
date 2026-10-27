@@ -11,6 +11,7 @@ ErrorCode = Literal[
     "llm_unavailable",
     "invalid_turn_request",
     "checkpointer_write_failed",
+    "ws_already_open",
 ]
 
 # Align with apps/web MAX_MESSAGE_LENGTH (chat.copy.ts).

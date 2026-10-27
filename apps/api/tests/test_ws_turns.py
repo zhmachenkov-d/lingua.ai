@@ -19,7 +19,7 @@ from app.main import app
 from app.router.turn import CTA_MESSAGE, CTAS, TurnError, TurnSuccess, handle_turn
 from app.schemas.ws import MAX_TURN_TEXT_LENGTH
 from fastapi.testclient import TestClient
-from starlette.testclient import WebSocketDenialResponse
+from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.fixture(autouse=True)
@@ -164,20 +164,29 @@ def test_overlapping_inflight_turn(client: TestClient) -> None:
     assert complete["turn_id"] == "1"
 
 
-def test_second_ws_409_while_first_open(client: TestClient) -> None:
+def test_second_ws_conflict_while_first_open(client: TestClient) -> None:
     with patch(
         "app.router.turn.write_turn_snapshot",
         new_callable=AsyncMock,
         return_value={},
     ):
         with client.websocket_connect("/ws") as first:
-            with pytest.raises(WebSocketDenialResponse) as exc_info:
-                with client.websocket_connect("/ws"):
-                    pass
-            assert exc_info.value.status_code == 409
+            with client.websocket_connect("/ws") as second:
+                conflict = second.receive_json()
+                assert conflict["kind"] == "error"
+                assert conflict["code"] == "ws_already_open"
+                assert "message" in conflict
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    second.receive_json()
+                assert exc_info.value.code == ws_mod.WS_ALREADY_OPEN_CLOSE_CODE
             first.send_json({"kind": "turn_request", "text": " "})
             event = first.receive_json()
             assert event["kind"] == "turn_complete"
+        # Rejectee never held occupancy — a new client can claim after first closes.
+        with client.websocket_connect("/ws") as third:
+            third.send_json({"kind": "turn_request", "text": " "})
+            again = third.receive_json()
+            assert again["kind"] == "turn_complete"
 
 
 def test_missing_key_error_code(

@@ -11,7 +11,11 @@ export type ErrorCode =
   | 'llm_unavailable'
   | 'invalid_turn_request'
   | 'checkpointer_write_failed'
+  | 'ws_already_open'
   | (string & {});
+
+/** Application close code for singleton /ws conflict (mirrors historical HTTP 409). */
+export const WS_ALREADY_OPEN_CLOSE_CODE = 4009;
 
 export interface TurnRequest {
   kind: TurnRequestKind;

@@ -8,6 +8,7 @@ import {
   PASTE_TOO_LONG,
   SOON_LABEL,
   UNPARSEABLE_FRAME,
+  WS_ALREADY_OPEN,
 } from './chat.copy';
 import { WEB_SOCKET_FACTORY, WS_URL } from './chat-ws.tokens';
 import { MockWebSocket } from './mock-web-socket';
@@ -120,7 +121,7 @@ describe('ChatShell', () => {
     fixture.detectChanges();
 
     expect(shell['inFlight']()).toBe(false);
-    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['connectionBanner']()).toBe(NETWORK_FAIL);
     expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
     expect(fixture.nativeElement.textContent).toContain('Повторить');
   });
@@ -131,7 +132,7 @@ describe('ChatShell', () => {
     shell['draft'].set('pending');
     shell['send']();
     expect(shell['inFlight']()).toBe(true);
-    expect(shell['showNetworkFail']()).toBe(false);
+    expect(shell['connectionBanner']()).toBeNull();
 
     vi.advanceTimersByTime(TURN_IDLE_MS - 1);
     expect(shell['inFlight']()).toBe(true);
@@ -140,7 +141,7 @@ describe('ChatShell', () => {
     fixture.detectChanges();
 
     expect(shell['inFlight']()).toBe(false);
-    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['connectionBanner']()).toBe(NETWORK_FAIL);
     expect(shell['composerDisabled']).toBe(true);
     expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
     expect(fixture.nativeElement.textContent).toContain('Повторить');
@@ -165,12 +166,12 @@ describe('ChatShell', () => {
     fixture.detectChanges();
 
     expect(shell['inFlight']()).toBe(false);
-    expect(shell['showNetworkFail']()).toBe(false);
+    expect(shell['connectionBanner']()).toBeNull();
 
     vi.advanceTimersByTime(TURN_IDLE_MS);
     fixture.detectChanges();
 
-    expect(shell['showNetworkFail']()).toBe(false);
+    expect(shell['connectionBanner']()).toBeNull();
     expect(fixture.nativeElement.textContent).toContain('done');
   });
 
@@ -184,7 +185,7 @@ describe('ChatShell', () => {
 
     vi.advanceTimersByTime(TURN_IDLE_MS);
     fixture.detectChanges();
-    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['connectionBanner']()).toBe(NETWORK_FAIL);
 
     latestSocket!.simulateMessage({
       kind: 'turn_complete',
@@ -196,24 +197,39 @@ describe('ChatShell', () => {
     });
     fixture.detectChanges();
 
-    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['connectionBanner']()).toBe(NETWORK_FAIL);
     expect(shell['bubbles']().length).toBe(beforeBubbles);
     expect(shell['ctas']()).toEqual([]);
     expect(fixture.nativeElement.textContent).not.toContain('late complete');
     expect(fixture.nativeElement.textContent).not.toContain('Tutor');
   });
 
-  it('shows network-fail and Повторить on connect fail / 409 without stub turns', () => {
+  it('shows network-fail and Повторить on connect fail / abnormal close without stub turns', () => {
     const beforeBubbles = fixture.componentInstance['bubbles']().length;
     latestSocket!.simulateAbnormalClose();
     fixture.detectChanges();
 
     expect(fixture.componentInstance['inFlight']()).toBe(false);
-    expect(fixture.componentInstance['showNetworkFail']()).toBe(true);
+    expect(fixture.componentInstance['connectionBanner']()).toBe(NETWORK_FAIL);
     expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
+    expect(fixture.nativeElement.textContent).not.toContain(WS_ALREADY_OPEN);
     expect(fixture.nativeElement.textContent).toContain('Повторить');
     expect(fixture.componentInstance['bubbles']().length).toBe(beforeBubbles);
     expect(latestSocket!.sent).toEqual([]);
+  });
+
+  it('shows singleton-conflict banner distinct from network-fail on ws_already_open', () => {
+    const beforeBubbles = fixture.componentInstance['bubbles']().length;
+    latestSocket!.simulateSingletonConflict();
+    fixture.detectChanges();
+
+    expect(fixture.componentInstance['inFlight']()).toBe(false);
+    expect(fixture.componentInstance['connectionBanner']()).toBe(WS_ALREADY_OPEN);
+    expect(fixture.nativeElement.textContent).toContain(WS_ALREADY_OPEN);
+    expect(fixture.nativeElement.textContent).not.toContain(NETWORK_FAIL);
+    expect(fixture.nativeElement.textContent).toContain('Повторить');
+    expect(fixture.componentInstance['bubbles']().length).toBe(beforeBubbles);
+    expect(fixture.componentInstance['composerDisabled']).toBe(true);
   });
 
   it('shows server error message and re-enables composer', () => {
@@ -404,7 +420,7 @@ describe('ChatShell', () => {
     expect(latestSocket!.sent).toEqual([]);
     expect(shell['bubbles']()).toEqual([]);
     expect(shell['draft']()).toBe('lost');
-    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['connectionBanner']()).toBe(NETWORK_FAIL);
     expect(shell['composerDisabled']).toBe(true);
     expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
   });

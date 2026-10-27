@@ -35,18 +35,20 @@ async def _release_ws() -> None:
         _ws_occupied = False
 
 
+# Application close range 4000–4999; 4009 mirrors the historical HTTP 409 Conflict.
+WS_ALREADY_OPEN_CLOSE_CODE = 4009
+
+
 async def _reject_conflict(websocket: WebSocket) -> None:
-    """Deny the upgrade with HTTP 409 before accept (ASGI websocket denial)."""
-    await websocket.send(
-        {"type": "websocket.http.response.start", "status": 409, "headers": []}
+    """Accept briefly, send AD-6 error, then close — browsers never see HTTP status."""
+    await websocket.accept()
+    await websocket.send_json(
+        ErrorEvent(
+            message=ERROR_MESSAGES["ws_already_open"],
+            code="ws_already_open",
+        ).to_wire()
     )
-    await websocket.send(
-        {
-            "type": "websocket.http.response.body",
-            "body": b"Conflict: MVP learner WebSocket already open",
-            "more_body": False,
-        }
-    )
+    await websocket.close(code=WS_ALREADY_OPEN_CLOSE_CODE)
 
 
 def _parse_turn_id(raw: object) -> str | None:

@@ -28,9 +28,9 @@
     </div>
   }
 
-  @if (showNetworkFail()) {
+  @if (connectionBanner(); as bannerText) {
     <div class="banner banner--error" role="alert">
-      <p class="banner__text">{{ networkFail }}</p>
+      <p class="banner__text">{{ bannerText }}</p>
       <button type="button" class="banner__retry" (click)="retryConnection()">
         {{ retryLabel }}
       </button>
