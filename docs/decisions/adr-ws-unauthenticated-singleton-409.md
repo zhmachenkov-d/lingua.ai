@@ -12,3 +12,7 @@ Browser WebSocket clients never expose the HTTP status of a failed upgrade, so p
 4. The first connection stays open and usable.
 
 Clients key off the error code and/or close code `4009`. Do not rely on HTTP status. Chat chrome shows distinct RU singleton-conflict copy (not the generic network-fail banner alone); retry remains manual only.
+
+## Deploy assumption (single worker / replica)
+
+Occupancy (`_ws_occupied`) is in-process only. MVP therefore pins **one api process with one uvicorn worker** — `apps/api/Dockerfile` `CMD` and Compose `api` services must not introduce `--workers`, `WEB_CONCURRENCY`, or `deploy.replicas` > 1. That pin is documented in the README (Single-writer MVP + WebSocket) and enforced by `apps/api/tests/test_ws_occupancy_single_worker_gate.py`. A distributed claim across processes is out of scope for this ADR.
