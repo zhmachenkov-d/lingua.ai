@@ -153,7 +153,7 @@ export class ChatShell implements OnInit {
     }
 
     if (event.kind === 'error') {
-      if (this.isForeignTerminal(event.turn_id)) {
+      if (this.isForeignTerminal(event.turn_id, { softMatchNull: true })) {
         return;
       }
       this.clearPendingTurn();
@@ -162,9 +162,24 @@ export class ChatShell implements OnInit {
     }
   }
 
-  /** True when a pending send exists and this terminal's turn_id is not that pending id. */
-  private isForeignTerminal(turnId: string | null | undefined): boolean {
-    return this.pendingTurnId !== null && turnId !== this.pendingTurnId;
+  /**
+   * True when a pending send exists and this terminal's turn_id is not that pending id.
+   * With softMatchNull, null/undefined (omitted) matches the pending turn; empty string does not.
+   */
+  private isForeignTerminal(
+    turnId: string | null | undefined,
+    options?: { softMatchNull?: boolean },
+  ): boolean {
+    if (this.pendingTurnId === null) {
+      return false;
+    }
+    if (turnId === this.pendingTurnId) {
+      return false;
+    }
+    if (options?.softMatchNull && turnId == null) {
+      return false;
+    }
+    return true;
   }
 
   private clearPendingTurn(): void {

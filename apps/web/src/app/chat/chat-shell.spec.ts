@@ -336,7 +336,7 @@ describe('ChatShell', () => {
     expect(fixture.nativeElement.textContent).not.toContain('Tutor');
   });
 
-  it('keeps in-flight on error with mismatched or missing turn_id', () => {
+  it('keeps in-flight on error with foreign or empty-string turn_id', () => {
     const shell = fixture.componentInstance;
     shell['draft'].set('pending');
     shell['send']();
@@ -356,15 +356,49 @@ describe('ChatShell', () => {
 
     latestSocket!.simulateMessage({
       kind: 'error',
-      message: 'no id',
+      message: 'empty id',
       code: 'llm_unavailable',
-      turn_id: null,
+      turn_id: '',
     });
     fixture.detectChanges();
 
     expect(shell['inFlight']()).toBe(true);
     expect(shell['composerDisabled']).toBe(true);
     expect(shell['bubbles']().length).toBe(beforeBubbles);
+  });
+
+  it('clears in-flight on error with null or omitted turn_id while pending', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('pending');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'null id',
+      code: 'llm_unavailable',
+      turn_id: null,
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['composerDisabled']).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('null id');
+
+    shell['draft'].set('again');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+
+    latestSocket!.simulateMessage({
+      kind: 'error',
+      message: 'omitted id',
+      code: 'llm_unavailable',
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['composerDisabled']).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('omitted id');
   });
 
   it('clears in-flight on malformed frame while waiting for a terminal event', () => {
