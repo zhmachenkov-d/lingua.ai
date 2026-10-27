@@ -1,8 +1,8 @@
 """AD-6 WebSocket turn envelopes (field extras; kinds are closed)."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 TurnRequestKind = Literal["turn_request"]
 ServerEventKind = Literal["token_delta", "turn_complete", "error"]
@@ -13,13 +13,23 @@ ErrorCode = Literal[
     "checkpointer_write_failed",
 ]
 
+# Align with apps/web MAX_MESSAGE_LENGTH (chat.copy.ts).
+MAX_TURN_TEXT_LENGTH = 2000
+
+
+def _coerce_optional_str(value: object) -> str | None:
+    """Match hand-parser: keep string turn_id, treat anything else as absent."""
+    if isinstance(value, str):
+        return value
+    return None
+
 
 class TurnRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     kind: TurnRequestKind
-    text: str
-    turn_id: str | None = None
+    text: str = Field(max_length=MAX_TURN_TEXT_LENGTH)
+    turn_id: Annotated[str | None, BeforeValidator(_coerce_optional_str)] = None
 
 
 class TurnCompleteEvent(BaseModel):

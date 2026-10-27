@@ -7,15 +7,13 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from app.router.turn import ERROR_MESSAGES, TurnError, TurnSuccess, handle_turn
-from app.schemas.ws import ErrorEvent, TurnCompleteEvent
+from app.schemas.ws import ErrorEvent, TurnCompleteEvent, TurnRequest
 
 router = APIRouter(tags=["ws"])
-
-# Align with apps/web MAX_MESSAGE_LENGTH (chat.copy.ts).
-MAX_TURN_TEXT_LENGTH = 2000
 
 # At most one active /ws for the MVP learner (C2).
 _ws_lock = asyncio.Lock()
@@ -75,14 +73,11 @@ def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
     if not isinstance(data, dict):
         return _invalid_error(turn_id=None)
     turn_id = _parse_turn_id(data.get("turn_id"))
-    if data.get("kind") != "turn_request":
+    try:
+        req = TurnRequest.model_validate(data)
+    except ValidationError:
         return _invalid_error(turn_id=turn_id)
-    text = data.get("text")
-    if not isinstance(text, str):
-        return _invalid_error(turn_id=turn_id)
-    if len(text) > MAX_TURN_TEXT_LENGTH:
-        return _invalid_error(turn_id=turn_id)
-    return text, turn_id
+    return req.text, req.turn_id
 
 
 def _success_wire(result: TurnSuccess) -> dict[str, Any]:
