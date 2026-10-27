@@ -5,9 +5,8 @@ Checkpointer remains STM SoT. Mirror failures must never fail the turn.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
-from sqlalchemy import select
+from sqlalchemy import func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.config import get_database_url, to_sqlalchemy_url
@@ -20,20 +19,25 @@ _MIRROR_ACTIVE_AGENT = "Router"
 
 
 async def ensure_mvp_learner_profile(db: AsyncSession) -> None:
-    """Insert MVP learner_profile id with empty CEFR defaults if missing (AD-4)."""
-    existing = await db.get(LearnerProfile, MVP_LEARNER_ID)
-    if existing is not None:
-        return
+    """Insert MVP learner_profile id with empty CEFR defaults if missing (AD-4).
+
+    Conflict-safe: concurrent upserts must not abort on profile PK.
+    """
     # id only — server defaults for cefr_by_skill/goals/constraints; do not invent CEFR.
-    db.add(LearnerProfile(id=MVP_LEARNER_ID))
-    await db.flush()
+    stmt = (
+        insert(LearnerProfile)
+        .values(id=MVP_LEARNER_ID)
+        .on_conflict_do_nothing(index_elements=[LearnerProfile.id])
+    )
+    await db.execute(stmt)
 
 
 async def upsert_session_mirror(*, database_url: str | None = None) -> None:
     """Upsert one Session row for ``MVP_LEARNER_ID`` via an ephemeral engine.
 
     Prefer ``database_url`` override (same pattern as checkpointer); do not use
-    process-global ``get_engine()``.
+    process-global ``get_engine()``. Concurrent first writes converge via
+    UNIQUE(learner_id) + ON CONFLICT DO UPDATE.
     """
     url = database_url if database_url is not None else get_database_url()
     engine = create_async_engine(to_sqlalchemy_url(url))
@@ -41,22 +45,21 @@ async def upsert_session_mirror(*, database_url: str | None = None) -> None:
         factory = async_sessionmaker(engine, expire_on_commit=False)
         async with factory() as db:
             await ensure_mvp_learner_profile(db)
-            result = await db.execute(
-                select(Session).where(Session.learner_id == MVP_LEARNER_ID).limit(1)
-            )
-            row = result.scalar_one_or_none()
-            now = datetime.now(UTC)
-            if row is None:
-                db.add(
-                    Session(
-                        learner_id=MVP_LEARNER_ID,
-                        active_agent=_MIRROR_ACTIVE_AGENT,
-                        updated_at=now,
-                    )
+            stmt = (
+                insert(Session)
+                .values(
+                    learner_id=MVP_LEARNER_ID,
+                    active_agent=_MIRROR_ACTIVE_AGENT,
                 )
-            else:
-                row.active_agent = _MIRROR_ACTIVE_AGENT
-                row.updated_at = now
+                .on_conflict_do_update(
+                    index_elements=[Session.learner_id],
+                    set_={
+                        "active_agent": _MIRROR_ACTIVE_AGENT,
+                        "updated_at": func.now(),
+                    },
+                )
+            )
+            await db.execute(stmt)
             await db.commit()
     finally:
         await engine.dispose()
