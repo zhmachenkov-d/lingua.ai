@@ -1206,15 +1206,6 @@ def current_branch(project_root: Path) -> str:
     return run_git(project_root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
-def has_unpushed_or_new_commits(project_root: Path) -> bool:
-    """True when HEAD has commits not on origin for this branch (or no upstream)."""
-    branch = current_branch(project_root)
-    if branch in PROTECTED_BRANCHES:
-        return False
-    # Always attempt push after successful work; caller decides --no-push.
-    return True
-
-
 def default_branch(project_root: Path) -> str:
     """Return the repo default branch (main/master), preferring ``gh`` metadata."""
     proc = subprocess.run(
@@ -1242,6 +1233,36 @@ def default_branch(project_root: Path) -> str:
         if check.returncode == 0:
             return candidate
     return "main"
+
+
+def default_branch_tip(project_root: Path) -> str | None:
+    """Resolve a rev for the default branch tip (prefer ``origin/<default>``)."""
+    base = default_branch(project_root)
+    for tip in (f"origin/{base}", base):
+        check = run_git(project_root, "rev-parse", "--verify", tip, check=False)
+        if check.returncode == 0:
+            return tip
+    return None
+
+
+def commits_ahead_of_default(project_root: Path) -> int:
+    """Count commits on HEAD that are not reachable from the default branch tip."""
+    tip = default_branch_tip(project_root)
+    if tip is None:
+        return 0
+    proc = run_git(project_root, "rev-list", "--count", f"{tip}..HEAD")
+    try:
+        return int(proc.stdout.strip() or "0")
+    except ValueError:
+        return 0
+
+
+def has_unpushed_or_new_commits(project_root: Path) -> bool:
+    """True when HEAD has commits ahead of the default branch (and is not protected)."""
+    branch = current_branch(project_root)
+    if branch in PROTECTED_BRANCHES:
+        return False
+    return commits_ahead_of_default(project_root) > 0
 
 
 def sanitize_branch_slug(ref: str) -> str:
@@ -1633,6 +1654,14 @@ def ensure_push_and_pr(
         raise OrchestratorHalt(
             SHUTDOWN_ERROR, f"refusing to push protected branch {branch}"
         )
+    ahead = commits_ahead_of_default(project_root)
+    if ahead < 1:
+        log.info(
+            "skip push/PR: no commits ahead of default branch=%s refs=%s",
+            default_branch(project_root),
+            refs,
+        )
+        return None
     log.info("git push -u origin HEAD branch=%s", branch)
     push = subprocess.run(
         ["git", "push", "-u", "origin", "HEAD"],
@@ -1734,6 +1763,9 @@ def ensure_push_pr_and_merge(
         plan_path=plan_path,
         kind=kind,
     )
+    if url is None:
+        # No commits ahead of default (or push/PR skipped); do not merge.
+        return None
     info = _gh_pr_view(project_root, "url,title")
     subject = str((info or {}).get("title") or "").strip() or _pr_title_for_ticket(
         epic=epic,
@@ -2756,15 +2788,22 @@ def run_retrospective(
         epic,
         format_token_cost(agent.usage),
     )
-    pr_url = ensure_push_pr_and_merge(
-        project_root,
-        epic=epic,
-        refs=[f"retrospective:{epic}"],
-        no_push=no_push,
-        dry_run=dry_run,
-        title="retrospective",
-        kind="retrospective",
-    )
+    pr_url = None
+    if has_unpushed_or_new_commits(project_root):
+        pr_url = ensure_push_pr_and_merge(
+            project_root,
+            epic=epic,
+            refs=[f"retrospective:{epic}"],
+            no_push=no_push,
+            dry_run=dry_run,
+            title="retrospective",
+            kind="retrospective",
+        )
+    else:
+        log.info(
+            "retrospective skip push/PR epic=%s reason=no_commits_ahead_of_default",
+            epic,
+        )
     unit.pr_url = pr_url
     report.add(unit)
     log_cumulative_tokens(report)
