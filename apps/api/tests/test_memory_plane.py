@@ -279,7 +279,7 @@ def test_missing_database_url_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> N
         "POSTGRES_HOST",
     ):
         monkeypatch.delenv(key, raising=False)
-    with pytest.raises(DatabaseConfigError, match="DATABASE_URL"):
+    with pytest.raises(DatabaseConfigError, match="DATABASE_URL.*percent-encodes"):
         get_database_url()
     with pytest.raises(DatabaseConfigError):
         asyncio.run(bootstrap())
@@ -321,7 +321,7 @@ def test_incomplete_postgres_components_names_encoding(
     monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss")
     monkeypatch.delenv("POSTGRES_DB", raising=False)
     monkeypatch.delenv("POSTGRES_HOST", raising=False)
-    with pytest.raises(DatabaseConfigError, match="percent-encodes|POSTGRES_DB"):
+    with pytest.raises(DatabaseConfigError, match="percent-encodes"):
         get_database_url()
 
 
