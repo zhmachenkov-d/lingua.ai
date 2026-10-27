@@ -1,7 +1,7 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 
-import { ChatShell } from './chat-shell';
+import { ChatShell, TURN_IDLE_MS } from './chat-shell';
 import {
   MAX_MESSAGE_LENGTH,
   NETWORK_FAIL,
@@ -36,6 +36,11 @@ describe('ChatShell', () => {
     fixture.detectChanges();
     latestSocket!.simulateOpen();
     fixture.detectChanges();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    fixture.destroy();
   });
 
   it('blocks over-length paste with paste-too-long and sends no WS frame', () => {
@@ -118,6 +123,84 @@ describe('ChatShell', () => {
     expect(shell['showNetworkFail']()).toBe(true);
     expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
     expect(fixture.nativeElement.textContent).toContain('Повторить');
+  });
+
+  it('clears in-flight and shows network-fail when idle watchdog fires', () => {
+    vi.useFakeTimers();
+    const shell = fixture.componentInstance;
+    shell['draft'].set('pending');
+    shell['send']();
+    expect(shell['inFlight']()).toBe(true);
+    expect(shell['showNetworkFail']()).toBe(false);
+
+    vi.advanceTimersByTime(TURN_IDLE_MS - 1);
+    expect(shell['inFlight']()).toBe(true);
+
+    vi.advanceTimersByTime(1);
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['composerDisabled']).toBe(true);
+    expect(fixture.nativeElement.textContent).toContain(NETWORK_FAIL);
+    expect(fixture.nativeElement.textContent).toContain('Повторить');
+  });
+
+  it('cancels idle watchdog when a matching terminal arrives', () => {
+    vi.useFakeTimers();
+    const shell = fixture.componentInstance;
+    shell['draft'].set('ok');
+    shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+
+    vi.advanceTimersByTime(TURN_IDLE_MS / 2);
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'done',
+      ctas: ['tutor'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: frame.turn_id,
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['showNetworkFail']()).toBe(false);
+
+    vi.advanceTimersByTime(TURN_IDLE_MS);
+    fixture.detectChanges();
+
+    expect(shell['showNetworkFail']()).toBe(false);
+    expect(fixture.nativeElement.textContent).toContain('done');
+  });
+
+  it('ignores late terminals after idle watchdog shows network-fail', () => {
+    vi.useFakeTimers();
+    const shell = fixture.componentInstance;
+    shell['draft'].set('pending');
+    shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+    const beforeBubbles = shell['bubbles']().length;
+
+    vi.advanceTimersByTime(TURN_IDLE_MS);
+    fixture.detectChanges();
+    expect(shell['showNetworkFail']()).toBe(true);
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'late complete',
+      ctas: ['tutor'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: frame.turn_id,
+    });
+    fixture.detectChanges();
+
+    expect(shell['showNetworkFail']()).toBe(true);
+    expect(shell['bubbles']().length).toBe(beforeBubbles);
+    expect(shell['ctas']()).toEqual([]);
+    expect(fixture.nativeElement.textContent).not.toContain('late complete');
+    expect(fixture.nativeElement.textContent).not.toContain('Tutor');
   });
 
   it('shows network-fail and Повторить on connect fail / 409 without stub turns', () => {
