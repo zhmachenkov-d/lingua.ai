@@ -1754,24 +1754,6 @@ def ensure_push_pr_and_merge(
 # API id for Cursor Auto; "auto-smart" is not a valid models.list() id on current keys.
 DEFAULT_MODEL_ID = "auto"
 AGENT_START_MAX_ATTEMPTS = 3
-_AGENT_TEXT_CAP = 200
-_AGENT_ASSIST_LINE_CAP = 40
-_AGENT_ASSIST_CHAR_CAP = 4000
-_AGENT_THINK_CHAR_CAP = 400
-_AGENT_THINK_LINE_CAP = 8
-_AGENT_TOOL_RESULT_CAP = 300
-_TOOL_SUMMARY_KEYS = (
-    "path",
-    "command",
-    "pattern",
-    "glob",
-    "glob_pattern",
-    "query",
-    "url",
-    "file",
-    "working_directory",
-    "target_directory",
-)
 
 _ANSI = {
     "reset": "\033[0m",
@@ -1829,55 +1811,21 @@ def _paint(style: str, text: str) -> str:
     return f"{code}{text}{_ANSI['reset']}"
 
 
-def _truncate(text: str, cap: int = _AGENT_TEXT_CAP) -> str:
-    text = text.replace("\n", " ").strip()
-    if len(text) <= cap:
-        return text
-    return text[: cap - 1] + "…"
-
-
-def _short_payload(value: Any, cap: int = _AGENT_TEXT_CAP) -> str:
+def _format_payload(value: Any) -> str:
     if value is None:
         return ""
-    try:
-        raw = json.dumps(value, ensure_ascii=False, default=str)
-    except TypeError:
-        raw = str(value)
-    return _truncate(raw, cap)
-
-
-def _tool_args_summary(args: Any) -> str:
-    if args is None:
-        return ""
-    if isinstance(args, str):
-        stripped = args.strip()
+    if isinstance(value, str):
+        stripped = value.strip()
         if not stripped:
             return ""
         try:
-            args = json.loads(stripped)
+            value = json.loads(stripped)
         except json.JSONDecodeError:
-            return _truncate(stripped, 120)
-    if not isinstance(args, dict):
-        return _short_payload(args, 120)
-    parts: list[str] = []
-    for key in _TOOL_SUMMARY_KEYS:
-        if key not in args or args[key] in (None, ""):
-            continue
-        val = str(args[key])
-        if len(val) > 80:
-            val = val[:79] + "…"
-        parts.append(f"{key}={val}")
-    if not parts:
-        for i, (key, value) in enumerate(args.items()):
-            if i >= 3:
-                break
-            if value in (None, ""):
-                continue
-            val = str(value)
-            if len(val) > 60:
-                val = val[:59] + "…"
-            parts.append(f"{key}={val}")
-    return " ".join(parts)
+            return value
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str)
+    except TypeError:
+        return str(value)
 
 
 def _emit_agent_line(kind: str, text: str) -> None:
@@ -1896,38 +1844,12 @@ def _emit_agent_line(kind: str, text: str) -> None:
     print(f"{prefix} {body}", file=sys.stderr, flush=True)
 
 
-def _emit_agent_block(
-    kind: str,
-    text: str,
-    *,
-    char_cap: int,
-    line_cap: int | None = None,
-) -> None:
+def _emit_agent_block(kind: str, text: str) -> None:
     text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip()
     if not text:
         return
-    lines = text.split("\n")
-    truncated = False
-    if line_cap is not None and len(lines) > line_cap:
-        lines = lines[:line_cap]
-        truncated = True
-    out_lines: list[str] = []
-    used = 0
-    for line in lines:
-        if used >= char_cap:
-            truncated = True
-            break
-        remaining = char_cap - used
-        if len(line) > remaining:
-            out_lines.append(line[:remaining] + "…")
-            truncated = True
-            break
-        out_lines.append(line)
-        used += len(line) + 1
-    for line in out_lines:
+    for line in text.split("\n"):
         _emit_agent_line(kind, line)
-    if truncated:
-        _emit_agent_line(kind, "… truncated")
 
 
 def _assistant_text(message: Any) -> str:
@@ -1946,22 +1868,12 @@ def _emit_agent_message(message: Any) -> None:
     if msg_type == "assistant":
         text = _assistant_text(message)
         if text:
-            _emit_agent_block(
-                "assistant",
-                text,
-                char_cap=_AGENT_ASSIST_CHAR_CAP,
-                line_cap=_AGENT_ASSIST_LINE_CAP,
-            )
+            _emit_agent_block("assistant", text)
         return
     if msg_type == "thinking":
         text = getattr(message, "text", "") or ""
         if text:
-            _emit_agent_block(
-                "thinking",
-                text,
-                char_cap=_AGENT_THINK_CHAR_CAP,
-                line_cap=_AGENT_THINK_LINE_CAP,
-            )
+            _emit_agent_block("thinking", text)
         return
     if msg_type == "tool_call":
         name = getattr(message, "name", "") or "tool"
@@ -1971,19 +1883,17 @@ def _emit_agent_message(message: Any) -> None:
             "completed": "tool_completed",
             "error": "tool_error",
         }.get(status, "tool_running")
-        parts = [f"{name}"]
+        header = name
         if status:
-            parts.append(f"[{status}]")
-        summary = _tool_args_summary(getattr(message, "args", None))
-        if summary:
-            parts.append(summary)
+            header = f"{header} [{status}]"
+        _emit_agent_line(kind, header)
+        args_text = _format_payload(getattr(message, "args", None))
+        if args_text:
+            _emit_agent_block(kind, args_text)
         if status in {"completed", "error"}:
-            result = _short_payload(
-                getattr(message, "result", None), _AGENT_TOOL_RESULT_CAP
-            )
-            if result:
-                parts.append(f"→ {result}")
-        _emit_agent_line(kind, " ".join(parts))
+            result_text = _format_payload(getattr(message, "result", None))
+            if result_text:
+                _emit_agent_block(kind, f"→ {result_text}")
         return
     if msg_type == "status":
         status = getattr(message, "status", "") or ""
@@ -2019,19 +1929,9 @@ class _AgentTextCoalescer:
         self._kind = None
         self._parts = []
         if kind == "assistant":
-            _emit_agent_block(
-                "assistant",
-                text,
-                char_cap=_AGENT_ASSIST_CHAR_CAP,
-                line_cap=_AGENT_ASSIST_LINE_CAP,
-            )
+            _emit_agent_block("assistant", text)
         elif kind == "thinking":
-            _emit_agent_block(
-                "thinking",
-                text,
-                char_cap=_AGENT_THINK_CHAR_CAP,
-                line_cap=_AGENT_THINK_LINE_CAP,
-            )
+            _emit_agent_block("thinking", text)
 
     def feed(self, message: Any) -> None:
         msg_type = getattr(message, "type", None)
