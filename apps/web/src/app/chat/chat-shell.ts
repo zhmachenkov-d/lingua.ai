@@ -12,6 +12,7 @@ import {
   SEND_LABEL,
   SOON_LABEL,
   UNPARSEABLE_FRAME,
+  WS_ALREADY_OPEN,
 } from './chat.copy';
 import { ChatWsService } from './chat-ws.service';
 import { mapCtaIds } from './cta-labels';
@@ -37,7 +38,6 @@ export class ChatShell implements OnInit {
   protected readonly sendLabel = SEND_LABEL;
   protected readonly soonLabel = SOON_LABEL;
   protected readonly retryLabel = RETRY_LABEL;
-  protected readonly networkFail = NETWORK_FAIL;
 
   protected readonly draft = signal('');
   protected readonly bubbles = signal<ChatBubble[]>([]);
@@ -46,7 +46,8 @@ export class ChatShell implements OnInit {
   /** Client turn_id of the send waiting on a terminal event; null when idle. */
   private pendingTurnId: string | null = null;
   protected readonly localError = signal<string | null>(null);
-  protected readonly showNetworkFail = signal(false);
+  /** Connection banner copy (network-fail or singleton conflict); null when clear. */
+  protected readonly connectionBanner = signal<string | null>(null);
 
   protected readonly connectionState = this.ws.connectionState;
 
@@ -55,7 +56,9 @@ export class ChatShell implements OnInit {
     effect(() => {
       const state = this.connectionState();
       if (state === 'failed') {
-        this.clearInFlightAndShowNetworkFail();
+        this.clearInFlightAndShowBanner(NETWORK_FAIL);
+      } else if (state === 'conflict') {
+        this.clearInFlightAndShowBanner(WS_ALREADY_OPEN);
       }
     });
   }
@@ -71,7 +74,7 @@ export class ChatShell implements OnInit {
   }
 
   protected get composerDisabled(): boolean {
-    return this.inFlight() || this.showNetworkFail() || this.connectionState() !== 'open';
+    return this.inFlight() || this.connectionBanner() !== null || this.connectionState() !== 'open';
   }
 
   protected onSubmit(event: Event): void {
@@ -80,7 +83,7 @@ export class ChatShell implements OnInit {
   }
 
   protected send(): void {
-    if (this.inFlight() || this.showNetworkFail() || this.connectionState() !== 'open') {
+    if (this.inFlight() || this.connectionBanner() !== null || this.connectionState() !== 'open') {
       return;
     }
 
@@ -96,7 +99,7 @@ export class ChatShell implements OnInit {
     const turnId = crypto.randomUUID();
     const sent = this.ws.sendTurn(text, turnId);
     if (!sent) {
-      this.clearInFlightAndShowNetworkFail();
+      this.clearInFlightAndShowBanner(NETWORK_FAIL);
       return;
     }
 
@@ -111,15 +114,15 @@ export class ChatShell implements OnInit {
   }
 
   protected retryConnection(): void {
-    this.showNetworkFail.set(false);
+    this.connectionBanner.set(null);
     this.localError.set(null);
     this.clearPendingTurn();
     this.ws.retry();
   }
 
   private onServerEvent(event: ServerEvent): void {
-    // Network-fail recovery (idle watchdog or socket fail): ignore further frames until retry.
-    if (this.showNetworkFail()) {
+    // Connection banner (outage or singleton conflict): ignore further frames until retry.
+    if (this.connectionBanner() !== null) {
       return;
     }
 
@@ -167,7 +170,7 @@ export class ChatShell implements OnInit {
     this.clearTurnIdleWatchdog();
     this.turnIdleTimer = setTimeout(() => {
       this.turnIdleTimer = null;
-      this.clearInFlightAndShowNetworkFail();
+      this.clearInFlightAndShowBanner(NETWORK_FAIL);
     }, TURN_IDLE_MS);
   }
 
@@ -188,9 +191,9 @@ export class ChatShell implements OnInit {
     this.ctas.set([]);
   }
 
-  private clearInFlightAndShowNetworkFail(): void {
+  private clearInFlightAndShowBanner(message: string): void {
     this.clearPendingTurn();
-    this.showNetworkFail.set(true);
+    this.connectionBanner.set(message);
   }
 
   private appendBubble(partial: Omit<ChatBubble, 'id'>): void {

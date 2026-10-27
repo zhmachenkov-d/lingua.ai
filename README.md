@@ -152,7 +152,7 @@ Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL
 
 ### Learner WebSocket turns (Router skeleton)
 
-Single unauthenticated MVP entry: **`GET /ws`** (WebSocket upgrade). All learner turns are Router turns (AD-6). At most one active `/ws` for the MVP learner — a second concurrent upgrade is rejected with **HTTP 409**; the first connection stays open. Within one connection, at most one in-flight turn (overlapping `turn_request` → `error` `invalid_turn_request`).
+Single unauthenticated MVP entry: **`GET /ws`** (WebSocket upgrade). All learner turns are Router turns (AD-6). At most one active `/ws` for the MVP learner — a second concurrent client is accepted briefly, then rejected with AD-6 `error` `ws_already_open` and WebSocket close code **4009** (browsers never see HTTP upgrade status); the first connection stays open and keeps occupancy. Within one connection, at most one in-flight turn (overlapping `turn_request` → `error` `invalid_turn_request`).
 
 **Event kinds (closed set):**
 
@@ -169,7 +169,7 @@ Optional client `turn_id` is echoed on the matching `turn_complete` / `error`; o
 
 **LLM degrade (FR-1 subset):** primary `deepseek-flash`, escalation `deepseek-v4-pro` (OpenAI-compatible `https://api.deepseek.com`). Compose passes `DEEPSEEK_API_KEY` into `api` from `.env`. Missing/empty key → `error` `llm_misconfigured`. Both models down / unreachable / timeout / incomplete → `error` `llm_unavailable`. Escalation success → `backup_notice`: `Сейчас отвечает запасная модель.` (never folded into `message`). No monthly spend-cap enforcement in this story; per-request timeout and `max_tokens` still apply. No invented chat content.
 
-**Error `code` values:** `llm_misconfigured` | `llm_unavailable` | `invalid_turn_request` | `checkpointer_write_failed`. Invalid inbound (non-JSON, bad kind, missing/non-string `text`, or `text` longer than 2000 characters) and overlapping in-flight turns use `invalid_turn_request` with no LLM call and no checkpointer write. Checkpointer snapshot write happens only after successful CTA/blank handling (Router sole writer, AD-3); failed `aput` → `checkpointer_write_failed` and no success `turn_complete`.
+**Error `code` values:** `llm_misconfigured` | `llm_unavailable` | `invalid_turn_request` | `checkpointer_write_failed` | `ws_already_open`. Invalid inbound (non-JSON, bad kind, missing/non-string `text`, or `text` longer than 2000 characters) and overlapping in-flight turns use `invalid_turn_request` with no LLM call and no checkpointer write. Checkpointer snapshot write happens only after successful CTA/blank handling (Router sole writer, AD-3); failed `aput` → `checkpointer_write_failed` and no success `turn_complete`. Singleton conflict (`ws_already_open`) is sent on a briefly accepted second `/ws` before close `4009`.
 
 ```bash
 # Example (api on :8000; needs websocat or similar)

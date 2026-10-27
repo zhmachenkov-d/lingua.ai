@@ -113,11 +113,29 @@ describe('ChatWsService', () => {
     });
   });
 
-  it('marks failed on abnormal close (connect fail / 409)', () => {
+  it('marks failed on abnormal close (connect fail / outage)', () => {
     const service = TestBed.inject(ChatWsService);
     service.connect();
     latestSocket!.simulateAbnormalClose();
     expect(service.connectionState()).toBe('failed');
+  });
+
+  it('marks conflict on ws_already_open error + close 4009 (not failed)', () => {
+    const service = TestBed.inject(ChatWsService);
+    const events: unknown[] = [];
+    service.events$.subscribe((e) => events.push(e));
+    service.connect();
+    latestSocket!.simulateSingletonConflict();
+    expect(service.connectionState()).toBe('conflict');
+    expect(events).toEqual([]);
+  });
+
+  it('marks conflict on close 4009 alone without relying on HTTP status', () => {
+    const service = TestBed.inject(ChatWsService);
+    service.connect();
+    latestSocket!.simulateOpen();
+    latestSocket!.simulateClose(4009, true);
+    expect(service.connectionState()).toBe('conflict');
   });
 
   it('retry opens a new socket without auto-loop', () => {
