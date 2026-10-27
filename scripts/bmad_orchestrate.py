@@ -8,8 +8,9 @@
 # ///
 """BMAD Cursor build orchestrator.
 
-Python owns queueing, checkpoints, deferred append, mark-done, git push/PR, and
-reporting. Cursor agents run only for ``bmad-build-auto`` and ``bmad-retrospective``.
+Python owns queueing, checkpoints, deferred append, mark-done, git push/PR/merge,
+and reporting. Cursor agents run only for ``bmad-build-auto`` and
+``bmad-retrospective``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,9 @@ STORE_PROJECT_FILE = Path("_bmad/custom/ticketing-store-config.toml")
 STORE_STARTERS = Path(".agents/skills/bmad-agent-po/config")
 STORE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PROTECTED_BRANCHES = frozenset({"main", "master"})
+BRANCH_SLUG_RE = re.compile(r"[^a-z0-9._-]+")
+MERGE_POLL_INTERVAL_S = 30
+MERGE_TIMEOUT_S = 30 * 60
 SHUTDOWN_COMPLETED = "completed"
 SHUTDOWN_BLOCKED = "blocked"
 SHUTDOWN_PLAN_CHECKPOINT = "plan_checkpoint"
@@ -892,6 +896,213 @@ def has_unpushed_or_new_commits(project_root: Path) -> bool:
     return True
 
 
+def default_branch(project_root: Path) -> str:
+    """Return the repo default branch (main/master), preferring ``gh`` metadata."""
+    proc = subprocess.run(
+        ["gh", "repo", "view", "--json", "defaultBranchRef"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode == 0:
+        try:
+            data = json.loads(proc.stdout)
+            name = (data.get("defaultBranchRef") or {}).get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            pass
+    for candidate in ("main", "master"):
+        check = run_git(
+            project_root,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{candidate}",
+            check=False,
+        )
+        if check.returncode == 0:
+            return candidate
+    return "main"
+
+
+def sanitize_branch_slug(ref: str) -> str:
+    slug = ref.strip().lower().replace(" ", "-")
+    slug = BRANCH_SLUG_RE.sub("-", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-._")
+    return slug or "work"
+
+
+def checkout_work_branch(project_root: Path, ref: str) -> str:
+    """Ensure a non-protected work branch ``bmad/<ref>`` from an up-to-date default."""
+    branch = current_branch(project_root)
+    if branch not in PROTECTED_BRANCHES:
+        log.info("already on work branch=%s", branch)
+        return branch
+    default = default_branch(project_root)
+    if branch != default:
+        log.info("checkout default branch=%s", default)
+        run_git(project_root, "checkout", default)
+    log.info("git pull --ff-only on %s", default)
+    pull = run_git(project_root, "pull", "--ff-only", check=False)
+    if pull.returncode != 0:
+        run_git(project_root, "pull")
+    name = f"bmad/{sanitize_branch_slug(ref)}"
+    exists = run_git(project_root, "rev-parse", "--verify", name, check=False)
+    if exists.returncode == 0:
+        log.info("checkout existing work branch=%s", name)
+        run_git(project_root, "checkout", name)
+    else:
+        log.info("create work branch=%s from=%s", name, default)
+        run_git(project_root, "checkout", "-b", name)
+    return name
+
+
+def _gh_pr_view(project_root: Path, fields: str) -> dict[str, Any] | None:
+    proc = subprocess.run(
+        ["gh", "pr", "view", "--json", fields],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        return None
+    try:
+        data = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _pr_title_for_refs(epic: str | None, refs: list[str]) -> str:
+    epic_slug = epic or "build"
+    title = f"feat({epic_slug}): orchestrated build for {', '.join(refs)}"
+    if len(title) > 72:
+        title = f"feat({epic_slug}): orchestrated build"
+    return title
+
+
+def _is_merge_not_ready(err: str) -> bool:
+    lower = err.lower()
+    needles = (
+        "required status check",
+        "required checks",
+        "checks pending",
+        "not mergeable",
+        "merge is blocked",
+        "blocked by",
+        "review required",
+        "status check",
+        "waiting on",
+        "must be up to date",
+    )
+    return any(n in lower for n in needles)
+
+
+def _wait_for_pr_merged(project_root: Path, *, url: str | None) -> None:
+    deadline = time.monotonic() + MERGE_TIMEOUT_S
+    while time.monotonic() < deadline:
+        info = _gh_pr_view(project_root, "state,url")
+        if info and str(info.get("state") or "").upper() == "MERGED":
+            log.info("PR merged after wait url=%s", info.get("url") or url)
+            return
+        log.info(
+            "waiting for PR merge url=%s remaining≈%ss",
+            url,
+            max(0, int(deadline - time.monotonic())),
+        )
+        time.sleep(MERGE_POLL_INTERVAL_S)
+    raise OrchestratorHalt(
+        SHUTDOWN_ERROR,
+        f"timed out waiting for PR merge after {MERGE_TIMEOUT_S}s url={url}",
+    )
+
+
+def merge_pr(project_root: Path, *, subject: str) -> None:
+    info = _gh_pr_view(project_root, "url,title,state,mergeable")
+    if info is None:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, "no PR found to merge")
+    state = str(info.get("state") or "").upper()
+    url = info.get("url")
+    if state == "MERGED":
+        log.info("PR already merged url=%s", url)
+        return
+    mergeable = str(info.get("mergeable") or "").upper()
+    if mergeable == "CONFLICTING":
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"PR has merge conflicts url={url}")
+    log.info("gh pr merge --squash --delete-branch subject=%s url=%s", subject, url)
+    merge = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            "--squash",
+            "--delete-branch",
+            "--subject",
+            subject,
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode == 0:
+        log.info("merged PR url=%s", url)
+        return
+    err = merge.stderr.strip() or merge.stdout.strip() or "gh pr merge failed"
+    if not _is_merge_not_ready(err):
+        raise OrchestratorHalt(SHUTDOWN_ERROR, err)
+    log.info("enabling auto-merge for PR url=%s reason=%s", url, err)
+    auto = subprocess.run(
+        [
+            "gh",
+            "pr",
+            "merge",
+            "--auto",
+            "--squash",
+            "--delete-branch",
+            "--subject",
+            subject,
+        ],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if auto.returncode != 0:
+        auto_err = (
+            auto.stderr.strip() or auto.stdout.strip() or "gh pr merge --auto failed"
+        )
+        if "already enabled" not in auto_err.lower():
+            raise OrchestratorHalt(SHUTDOWN_ERROR, auto_err)
+    _wait_for_pr_merged(project_root, url=str(url) if url else None)
+
+
+def return_to_main(project_root: Path, feature_branch: str) -> None:
+    default = default_branch(project_root)
+    current = current_branch(project_root)
+    log.info(
+        "return to default=%s from feature_branch=%s current=%s",
+        default,
+        feature_branch,
+        current,
+    )
+    if current != default:
+        run_git(project_root, "checkout", default)
+    pull = run_git(project_root, "pull", "--ff-only", check=False)
+    if pull.returncode != 0:
+        run_git(project_root, "pull")
+    if not feature_branch or feature_branch in PROTECTED_BRANCHES:
+        return
+    if feature_branch == default:
+        return
+    exists = run_git(project_root, "rev-parse", "--verify", feature_branch, check=False)
+    if exists.returncode != 0:
+        return
+    delete = run_git(project_root, "branch", "-d", feature_branch, check=False)
+    if delete.returncode != 0:
+        # Squash merges often leave the local branch "not fully merged".
+        log.info("force-delete local branch after squash=%s", feature_branch)
+        run_git(project_root, "branch", "-D", feature_branch)
+
+
 def ensure_push_and_pr(
     project_root: Path,
     *,
@@ -901,7 +1112,9 @@ def ensure_push_and_pr(
     dry_run: bool,
 ) -> str | None:
     if dry_run or no_push:
-        log.info("skip push/PR dry_run=%s no_push=%s refs=%s", dry_run, no_push, refs)
+        log.info(
+            "skip push/PR/merge dry_run=%s no_push=%s refs=%s", dry_run, no_push, refs
+        )
         return None
     branch = current_branch(project_root)
     if branch in PROTECTED_BRANCHES:
@@ -921,24 +1134,14 @@ def ensure_push_and_pr(
             push.stderr.strip() or push.stdout.strip() or "git push failed",
         )
 
-    view = subprocess.run(
-        ["gh", "pr", "view", "--json", "url"],
-        cwd=project_root,
-        capture_output=True,
-        text=True,
-    )
-    if view.returncode == 0:
-        try:
-            url = json.loads(view.stdout).get("url")
-            log.info("existing PR url=%s", url)
-            return url
-        except json.JSONDecodeError:
-            return None
+    view = _gh_pr_view(project_root, "url,title")
+    if view and view.get("url"):
+        url = view.get("url")
+        log.info("existing PR url=%s", url)
+        return str(url) if url else None
 
-    epic_slug = epic or "build"
-    title = f"feat({epic_slug}): orchestrated build for {', '.join(refs)}"
-    if len(title) > 72:
-        title = f"feat({epic_slug}): orchestrated build"
+    title = _pr_title_for_refs(epic, refs)
+    base = default_branch(project_root)
     body = "\n".join(
         [
             "## Summary",
@@ -949,14 +1152,14 @@ def ensure_push_and_pr(
             "- [ ] Confirm CI on this PR",
         ]
     )
-    log.info("gh pr create title=%s", title)
+    log.info("gh pr create title=%s base=%s", title, base)
     create = subprocess.run(
         [
             "gh",
             "pr",
             "create",
             "--base",
-            "main",
+            base,
             "--title",
             title,
             "--body",
@@ -968,19 +1171,11 @@ def ensure_push_and_pr(
     )
     if create.returncode != 0:
         # Race: PR may exist now
-        view2 = subprocess.run(
-            ["gh", "pr", "view", "--json", "url"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-        )
-        if view2.returncode == 0:
-            try:
-                url = json.loads(view2.stdout).get("url")
-                log.info("PR appeared after create race url=%s", url)
-                return url
-            except json.JSONDecodeError:
-                pass
+        view2 = _gh_pr_view(project_root, "url")
+        if view2 and view2.get("url"):
+            url = view2.get("url")
+            log.info("PR appeared after create race url=%s", url)
+            return str(url) if url else None
         raise OrchestratorHalt(
             SHUTDOWN_ERROR,
             create.stderr.strip() or create.stdout.strip() or "gh pr create failed",
@@ -991,12 +1186,62 @@ def ensure_push_and_pr(
     return url
 
 
+def ensure_push_pr_and_merge(
+    project_root: Path,
+    *,
+    epic: str | None,
+    refs: list[str],
+    no_push: bool,
+    dry_run: bool,
+) -> str | None:
+    """Push, ensure PR, squash-merge with conventional subject, return to default."""
+    if dry_run or no_push:
+        log.info(
+            "skip push/PR/merge dry_run=%s no_push=%s refs=%s", dry_run, no_push, refs
+        )
+        return None
+    feature_branch = current_branch(project_root)
+    url = ensure_push_and_pr(
+        project_root,
+        epic=epic,
+        refs=refs,
+        no_push=False,
+        dry_run=False,
+    )
+    info = _gh_pr_view(project_root, "url,title")
+    subject = str((info or {}).get("title") or "").strip() or _pr_title_for_refs(
+        epic, refs
+    )
+    if info and info.get("url"):
+        url = str(info["url"])
+    merge_pr(project_root, subject=subject)
+    return_to_main(project_root, feature_branch)
+    return url
+
+
 # --------------------------------------------------------------------------- Cursor agent
 
 # API id for Cursor Auto; "auto-smart" is not a valid models.list() id on current keys.
 DEFAULT_MODEL_ID = "auto"
 AGENT_START_MAX_ATTEMPTS = 3
 _AGENT_TEXT_CAP = 200
+_AGENT_ASSIST_LINE_CAP = 40
+_AGENT_ASSIST_CHAR_CAP = 4000
+_AGENT_THINK_CHAR_CAP = 400
+_AGENT_THINK_LINE_CAP = 8
+_AGENT_TOOL_RESULT_CAP = 300
+_TOOL_SUMMARY_KEYS = (
+    "path",
+    "command",
+    "pattern",
+    "glob",
+    "glob_pattern",
+    "query",
+    "url",
+    "file",
+    "working_directory",
+    "target_directory",
+)
 
 _ANSI = {
     "reset": "\033[0m",
@@ -1007,6 +1252,16 @@ _ANSI = {
     "green": "\033[32m",
     "red": "\033[31m",
     "blue": "\033[34m",
+}
+
+_KIND_LABEL = {
+    "assistant": "asst",
+    "thinking": "think",
+    "tool_running": "tool",
+    "tool_completed": "tool",
+    "tool_error": "tool",
+    "status": "status",
+    "task": "task",
 }
 
 
@@ -1061,19 +1316,88 @@ def _short_payload(value: Any, cap: int = _AGENT_TEXT_CAP) -> str:
     return _truncate(raw, cap)
 
 
+def _tool_args_summary(args: Any) -> str:
+    if args is None:
+        return ""
+    if isinstance(args, str):
+        stripped = args.strip()
+        if not stripped:
+            return ""
+        try:
+            args = json.loads(stripped)
+        except json.JSONDecodeError:
+            return _truncate(stripped, 120)
+    if not isinstance(args, dict):
+        return _short_payload(args, 120)
+    parts: list[str] = []
+    for key in _TOOL_SUMMARY_KEYS:
+        if key not in args or args[key] in (None, ""):
+            continue
+        val = str(args[key])
+        if len(val) > 80:
+            val = val[:79] + "…"
+        parts.append(f"{key}={val}")
+    if not parts:
+        for i, (key, value) in enumerate(args.items()):
+            if i >= 3:
+                break
+            if value in (None, ""):
+                continue
+            val = str(value)
+            if len(val) > 60:
+                val = val[:59] + "…"
+            parts.append(f"{key}={val}")
+    return " ".join(parts)
+
+
 def _emit_agent_line(kind: str, text: str) -> None:
     style = {
         "assistant": "white",
-        "thinking": "cyan",
+        "thinking": "dim",
         "tool_running": "yellow",
         "tool_completed": "green",
         "tool_error": "red",
         "status": "blue",
         "task": "blue",
     }.get(kind, "")
-    prefix = _paint("dim", "agent |")
+    label = _KIND_LABEL.get(kind, (kind or "?")[:6])
+    prefix = _paint("dim", f"agent | {label:<6} |")
     body = _paint(style, text) if style else text
     print(f"{prefix} {body}", file=sys.stderr, flush=True)
+
+
+def _emit_agent_block(
+    kind: str,
+    text: str,
+    *,
+    char_cap: int,
+    line_cap: int | None = None,
+) -> None:
+    text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip()
+    if not text:
+        return
+    lines = text.split("\n")
+    truncated = False
+    if line_cap is not None and len(lines) > line_cap:
+        lines = lines[:line_cap]
+        truncated = True
+    out_lines: list[str] = []
+    used = 0
+    for line in lines:
+        if used >= char_cap:
+            truncated = True
+            break
+        remaining = char_cap - used
+        if len(line) > remaining:
+            out_lines.append(line[:remaining] + "…")
+            truncated = True
+            break
+        out_lines.append(line)
+        used += len(line) + 1
+    for line in out_lines:
+        _emit_agent_line(kind, line)
+    if truncated:
+        _emit_agent_line(kind, "… truncated")
 
 
 def _emit_agent_message(message: Any) -> None:
@@ -1084,12 +1408,22 @@ def _emit_agent_message(message: Any) -> None:
             if getattr(block, "type", None) == "text":
                 text = getattr(block, "text", "") or ""
                 if text:
-                    _emit_agent_line("assistant", text)
+                    _emit_agent_block(
+                        "assistant",
+                        text,
+                        char_cap=_AGENT_ASSIST_CHAR_CAP,
+                        line_cap=_AGENT_ASSIST_LINE_CAP,
+                    )
         return
     if msg_type == "thinking":
         text = getattr(message, "text", "") or ""
         if text:
-            _emit_agent_line("thinking", f"thinking: {_truncate(text)}")
+            _emit_agent_block(
+                "thinking",
+                text,
+                char_cap=_AGENT_THINK_CHAR_CAP,
+                line_cap=_AGENT_THINK_LINE_CAP,
+            )
         return
     if msg_type == "tool_call":
         name = getattr(message, "name", "") or "tool"
@@ -1099,22 +1433,24 @@ def _emit_agent_message(message: Any) -> None:
             "completed": "tool_completed",
             "error": "tool_error",
         }.get(status, "tool_running")
-        parts = [f"tool {name}"]
+        parts = [f"{name}"]
         if status:
             parts.append(f"[{status}]")
-        args = _short_payload(getattr(message, "args", None))
-        if args:
-            parts.append(f"args={args}")
+        summary = _tool_args_summary(getattr(message, "args", None))
+        if summary:
+            parts.append(summary)
         if status in {"completed", "error"}:
-            result = _short_payload(getattr(message, "result", None))
+            result = _short_payload(
+                getattr(message, "result", None), _AGENT_TOOL_RESULT_CAP
+            )
             if result:
-                parts.append(f"result={result}")
+                parts.append(f"→ {result}")
         _emit_agent_line(kind, " ".join(parts))
         return
     if msg_type == "status":
         status = getattr(message, "status", "") or ""
         detail = getattr(message, "message", "") or ""
-        line = f"status: {status}"
+        line = f"{status}"
         if detail:
             line = f"{line} {detail}"
         _emit_agent_line("status", line.strip())
@@ -1122,7 +1458,7 @@ def _emit_agent_message(message: Any) -> None:
     if msg_type == "task":
         status = getattr(message, "status", "") or ""
         text = getattr(message, "text", "") or ""
-        line = f"task: {status}"
+        line = f"{status}"
         if text:
             line = f"{line} {text}"
         _emit_agent_line("task", line.strip())
@@ -1194,6 +1530,7 @@ def run_cursor_agent(
             log.info("agent sent agent_id=%s run_id=%s", agent_id, run_id)
 
             phase = "stream"
+            _emit_agent_line("status", "----- begin -----")
             for message in run.messages():
                 _emit_agent_message(message)
 
@@ -1208,6 +1545,10 @@ def run_cursor_agent(
                     total_tokens=int(getattr(raw_usage, "total_tokens", 0) or 0),
                 )
             status = getattr(result, "status", None) or "unknown"
+            _emit_agent_line(
+                "status",
+                f"----- end status={status} {format_token_cost(usage)} -----",
+            )
             err = None
             if status == "error":
                 err = f"agent run failed: {run_id}"
@@ -1475,6 +1816,7 @@ def process_ticket(
 
     if not dry_run:
         require_clean_tree(project_root)
+        checkout_work_branch(project_root, ticket_ref)
 
     prompt = build_prompt(ticket_ref, halt_after_planning=halt_after_planning)
     agent = run_cursor_agent(
@@ -1595,7 +1937,7 @@ def process_ticket(
 
     pr_url = None
     if has_unpushed_or_new_commits(project_root):
-        pr_url = ensure_push_and_pr(
+        pr_url = ensure_push_pr_and_merge(
             project_root,
             epic=str(epic) if epic else None,
             refs=[ticket_ref],
@@ -1624,6 +1966,7 @@ def run_retrospective(
     log.info("retrospective start epic=%s", epic)
     if not dry_run:
         require_clean_tree(project_root)
+        checkout_work_branch(project_root, f"retro-{epic}")
     agent = run_cursor_agent(
         project_root=project_root,
         model=model,
@@ -1655,7 +1998,7 @@ def run_retrospective(
         epic,
         format_token_cost(agent.usage),
     )
-    pr_url = ensure_push_and_pr(
+    pr_url = ensure_push_pr_and_merge(
         project_root,
         epic=epic,
         refs=[f"retrospective:{epic}"],
@@ -1732,7 +2075,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--dry-run", action="store_true", help="resolve queue and print prompts only"
     )
     p.add_argument(
-        "--no-push", action="store_true", help="skip git push and gh pr create"
+        "--no-push",
+        action="store_true",
+        help="skip git push, PR create, and PR merge",
     )
     p.add_argument(
         "-y",
