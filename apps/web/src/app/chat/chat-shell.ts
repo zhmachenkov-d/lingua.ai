@@ -18,8 +18,13 @@ import { ChatWsService } from './chat-ws.service';
 import { mapCtaIds } from './cta-labels';
 import type { ChatBubble, CtaChip, ServerEvent } from './chat.types';
 
-/** Idle ms with no matching terminal event before network-fail recovery (#60). */
-export const TURN_IDLE_MS = 30_000;
+/**
+ * Idle ms with no matching terminal event before network-fail recovery (#60 / #111).
+ * Must stay strictly above server turn wall-clock worst case:
+ * 2×REQUEST_TIMEOUT_SECONDS (primary+escalate) + 2×CHECKPOINTER_WRITE_TIMEOUT_SECONDS
+ * (snapshot then session-mirror) = 120s, plus a small delivery margin.
+ */
+export const TURN_IDLE_MS = 125_000;
 
 @Component({
   selector: 'app-chat-shell',
