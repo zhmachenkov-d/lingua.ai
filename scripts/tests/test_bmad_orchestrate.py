@@ -1,28 +1,20 @@
-"""Unit tests for scripts/bmad_orchestrate.py result-file fallback and reports."""
+"""Unit tests for scripts/bmad_orchestrate package."""
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).resolve().parents[1] / "bmad_orchestrate.py"
+SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
 
-
-def load_orch():
-    name = "bmad_orchestrate_under_test"
-    spec = importlib.util.spec_from_file_location(name, SCRIPT)
-    assert spec is not None and spec.loader is not None
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules[name] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-orch = load_orch()
+import bmad_orchestrate as orch  # noqa: E402
+from bmad_orchestrate import pipeline as pipe  # noqa: E402
+from bmad_orchestrate import scm as scm_mod  # noqa: E402
 
 
 class TicketSlugTests(unittest.TestCase):
@@ -176,11 +168,11 @@ class ProcessTicketResultFallbackTests(unittest.TestCase):
                 "done_checkpoint": False,
             }
             with (
-                mock.patch.object(orch, "tickets_find", return_value=found),
-                mock.patch.object(orch, "require_clean_tree"),
-                mock.patch.object(orch, "checkout_work_branch"),
-                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
-                mock.patch.object(orch, "tracker_post_report"),
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch"),
+                mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
+                mock.patch.object(pipe, "tracker_post_report"),
             ):
                 with self.assertRaises(orch.OrchestratorHalt) as ctx:
                     orch.process_ticket(
@@ -242,15 +234,15 @@ class ProcessTicketResultFallbackTests(unittest.TestCase):
                 return None
 
             with (
-                mock.patch.object(orch, "tickets_find", return_value=found),
-                mock.patch.object(orch, "require_clean_tree"),
-                mock.patch.object(orch, "checkout_work_branch"),
-                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch"),
+                mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
                 mock.patch.object(
-                    orch, "tickets_mark_done", side_effect=fake_mark_done
+                    pipe, "tickets_mark_done", side_effect=fake_mark_done
                 ),
                 mock.patch.object(
-                    orch, "has_unpushed_or_new_commits", return_value=False
+                    scm_mod, "has_unpushed_or_new_commits", return_value=False
                 ),
             ):
                 orch.process_ticket(
@@ -290,10 +282,10 @@ class ProcessTicketResultFallbackTests(unittest.TestCase):
                 "done_checkpoint": False,
             }
             with (
-                mock.patch.object(orch, "tickets_find", return_value=found),
-                mock.patch.object(orch, "require_clean_tree"),
-                mock.patch.object(orch, "checkout_work_branch"),
-                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch"),
+                mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
             ):
                 with self.assertRaises(orch.OrchestratorHalt) as ctx:
                     orch.process_ticket(
@@ -314,9 +306,9 @@ class ProcessTicketResultFallbackTests(unittest.TestCase):
 class AheadOfDefaultTests(unittest.TestCase):
     def test_commits_ahead_equal_tips_is_zero(self) -> None:
         with (
-            mock.patch.object(orch, "default_branch_tip", return_value="origin/main"),
+            mock.patch.object(scm_mod, "default_branch_tip", return_value="origin/main"),
             mock.patch.object(
-                orch,
+                scm_mod,
                 "run_git",
                 return_value=mock.Mock(returncode=0, stdout="0\n", stderr=""),
             ) as run_git,
@@ -328,9 +320,9 @@ class AheadOfDefaultTests(unittest.TestCase):
 
     def test_commits_ahead_divergent_tip(self) -> None:
         with (
-            mock.patch.object(orch, "default_branch_tip", return_value="main"),
+            mock.patch.object(scm_mod, "default_branch_tip", return_value="main"),
             mock.patch.object(
-                orch,
+                scm_mod,
                 "run_git",
                 return_value=mock.Mock(returncode=0, stdout="3\n", stderr=""),
             ),
@@ -338,24 +330,24 @@ class AheadOfDefaultTests(unittest.TestCase):
             self.assertEqual(orch.commits_ahead_of_default(Path("/tmp/repo")), 3)
 
     def test_commits_ahead_missing_tip_is_zero(self) -> None:
-        with mock.patch.object(orch, "default_branch_tip", return_value=None):
+        with mock.patch.object(scm_mod, "default_branch_tip", return_value=None):
             self.assertEqual(orch.commits_ahead_of_default(Path("/tmp/repo")), 0)
 
     def test_has_unpushed_false_on_protected_branch(self) -> None:
-        with mock.patch.object(orch, "current_branch", return_value="main"):
+        with mock.patch.object(scm_mod, "current_branch", return_value="main"):
             self.assertFalse(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
 
     def test_has_unpushed_true_when_ahead(self) -> None:
         with (
-            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
-            mock.patch.object(orch, "commits_ahead_of_default", return_value=2),
+            mock.patch.object(scm_mod, "current_branch", return_value="bmad/work"),
+            mock.patch.object(scm_mod, "commits_ahead_of_default", return_value=2),
         ):
             self.assertTrue(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
 
     def test_has_unpushed_false_when_not_ahead(self) -> None:
         with (
-            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
-            mock.patch.object(orch, "commits_ahead_of_default", return_value=0),
+            mock.patch.object(scm_mod, "current_branch", return_value="bmad/work"),
+            mock.patch.object(scm_mod, "commits_ahead_of_default", return_value=0),
         ):
             self.assertFalse(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
 
@@ -363,10 +355,10 @@ class AheadOfDefaultTests(unittest.TestCase):
 class EnsurePushAndPrEmptyDiffTests(unittest.TestCase):
     def test_skips_push_and_pr_when_not_ahead(self) -> None:
         with (
-            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
-            mock.patch.object(orch, "commits_ahead_of_default", return_value=0),
-            mock.patch.object(orch, "default_branch", return_value="main"),
-            mock.patch.object(orch.subprocess, "run") as sp_run,
+            mock.patch.object(scm_mod, "current_branch", return_value="bmad/work"),
+            mock.patch.object(scm_mod, "commits_ahead_of_default", return_value=0),
+            mock.patch.object(scm_mod, "default_branch", return_value="main"),
+            mock.patch.object(scm_mod.subprocess, "run") as sp_run,
         ):
             url = orch.ensure_push_and_pr(
                 Path("/tmp/repo"),
@@ -390,13 +382,13 @@ class RunRetrospectiveEmptyDiffTests(unittest.TestCase):
             run_id="run-retro",
         )
         with (
-            mock.patch.object(orch, "require_clean_tree"),
-            mock.patch.object(orch, "checkout_work_branch"),
-            mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+            mock.patch.object(pipe, "require_clean_tree"),
+            mock.patch.object(pipe, "checkout_work_branch"),
+            mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
             mock.patch.object(
-                orch, "has_unpushed_or_new_commits", return_value=False
+                scm_mod, "has_unpushed_or_new_commits", return_value=False
             ) as ahead,
-            mock.patch.object(orch, "ensure_push_pr_and_merge") as push_merge,
+            mock.patch.object(scm_mod, "ensure_push_pr_and_merge") as push_merge,
         ):
             orch.run_retrospective(
                 project_root=Path("/tmp/repo"),
@@ -423,12 +415,12 @@ class RunRetrospectiveEmptyDiffTests(unittest.TestCase):
             run_id="run-retro",
         )
         with (
-            mock.patch.object(orch, "require_clean_tree"),
-            mock.patch.object(orch, "checkout_work_branch"),
-            mock.patch.object(orch, "run_cursor_agent", return_value=agent),
-            mock.patch.object(orch, "has_unpushed_or_new_commits", return_value=True),
+            mock.patch.object(pipe, "require_clean_tree"),
+            mock.patch.object(pipe, "checkout_work_branch"),
+            mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
+            mock.patch.object(scm_mod, "has_unpushed_or_new_commits", return_value=True),
             mock.patch.object(
-                orch, "ensure_push_pr_and_merge", return_value="https://example/pr/1"
+                scm_mod, "ensure_push_pr_and_merge", return_value="https://example/pr/1"
             ) as push_merge,
         ):
             orch.run_retrospective(
@@ -472,20 +464,20 @@ class ProcessTicketPushGateTests(unittest.TestCase):
                 "done_checkpoint": False,
             }
             with (
-                mock.patch.object(orch, "tickets_find", return_value=found),
-                mock.patch.object(orch, "require_clean_tree"),
-                mock.patch.object(orch, "checkout_work_branch"),
-                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
-                mock.patch.object(orch, "tickets_mark_done"),
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch"),
+                mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
+                mock.patch.object(pipe, "tickets_mark_done"),
                 mock.patch.object(
-                    orch, "has_unpushed_or_new_commits", return_value=True
+                    scm_mod, "has_unpushed_or_new_commits", return_value=True
                 ),
                 mock.patch.object(
-                    orch,
+                    scm_mod,
                     "ensure_push_pr_and_merge",
                     return_value="https://example/pr/9",
                 ) as push_merge,
-                mock.patch.object(orch, "epic_fully_done", return_value=False),
+                mock.patch.object(pipe, "epic_fully_done", return_value=False),
             ):
                 orch.process_ticket(
                     project_root=root,

@@ -1,0 +1,409 @@
+"""Tests for policy, verify, run_state, worktrees, plateau-defer, and sweep."""
+
+from __future__ import annotations
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from bmad_orchestrate import pipeline as pipe
+from bmad_orchestrate import scm as scm_mod
+from bmad_orchestrate.agent import AgentRunResult
+from bmad_orchestrate.policy import (
+    DEFAULT_POLICY_TOML,
+    Policy,
+    ensure_policy_template,
+    load_policy,
+)
+from bmad_orchestrate.report import RunReport
+from bmad_orchestrate.run_state import (
+    ENGINE_NAME,
+    PAUSE_BLOCKED,
+    PAUSE_PLAN_CHECKPOINT,
+    UnitAttemptState,
+    confirm_parked,
+    create_run,
+    load_run,
+    pause_run,
+    resolve_blocked,
+    save_run,
+)
+from bmad_orchestrate.scm import (
+    worktree_branch_name,
+    worktree_path_for,
+)
+from bmad_orchestrate.sweep import (
+    close_ledger_entries,
+    parse_ledger,
+    parse_triage_response,
+)
+from bmad_orchestrate.verify import (
+    VerifyPolicy,
+    resolve_plan_status,
+    verify_unit,
+)
+
+
+class PolicyTests(unittest.TestCase):
+    def test_defaults_when_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            policy = load_policy(root, create_if_missing=False)
+            self.assertEqual(policy.scm.isolation, "worktree")
+            self.assertEqual(policy.scm.remote, "none")
+            self.assertEqual(policy.limits.max_dev_attempts, 2)
+            self.assertEqual(policy.review.trigger, "recommended")
+            self.assertEqual(policy.verify.commands, [])
+
+    def test_creates_template_and_loads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            self.assertTrue(path.is_file())
+            self.assertIn("[scm]", path.read_text(encoding="utf-8"))
+            policy = load_policy(root)
+            self.assertEqual(policy.scm.merge_strategy, "squash")
+            self.assertEqual(policy.effective_max_followup_reviews, 1)
+
+    def test_rejects_invalid_remote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            path.write_text(
+                DEFAULT_POLICY_TOML.replace('remote = "none"', 'remote = "force"'),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Exception) as ctx:
+                load_policy(root, create_if_missing=False)
+            self.assertIn("remote", str(ctx.exception))
+
+
+class VerifyTests(unittest.TestCase):
+    def test_accepts_built_without_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "plan.md"
+            plan.write_text("---\nstatus: built\n---\n", encoding="utf-8")
+            with mock.patch(
+                "bmad_orchestrate.verify.worktree_has_diff", return_value=True
+            ):
+                result = verify_unit(
+                    project_root=root,
+                    ticket_ref="bug-x.md",
+                    plan_path=plan,
+                    policy=VerifyPolicy(commands=[], require_diff=True),
+                    baseline_rev="abc",
+                    expect_diff=True,
+                )
+            self.assertTrue(result.ok)
+            self.assertEqual(result.plan_status, "built")
+
+    def test_rejects_missing_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_bmad-output").mkdir()
+            plan = root / "plan.md"
+            plan.write_text("---\ntitle: x\n---\n", encoding="utf-8")
+            result = verify_unit(
+                project_root=root,
+                ticket_ref="bug-x.md",
+                plan_path=plan,
+                policy=VerifyPolicy(commands=[], require_diff=False),
+                baseline_rev=None,
+                expect_diff=False,
+            )
+            self.assertFalse(result.ok)
+            self.assertIn("missing", result.summary)
+
+    def test_result_file_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "missing-plan.md"
+            result_path = root / "_bmad-output" / "bmad-build-auto-result-bug-x.md"
+            result_path.parent.mkdir(parents=True)
+            result_path.write_text("---\nstatus: blocked\n---\n", encoding="utf-8")
+            status, _, fm, found, from_result = resolve_plan_status(
+                project_root=root,
+                ticket_ref="bug-x.md",
+                plan_path=plan,
+            )
+            self.assertEqual(status, "blocked")
+            self.assertTrue(from_result)
+            self.assertEqual(found, result_path)
+
+
+class RunStateTests(unittest.TestCase):
+    def test_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = create_run(root, mode="all", model="auto")
+            state.current_unit = UnitAttemptState(ref="bug-x.md", phase="build")
+            save_run(root, state)
+            loaded = load_run(root, state.run_id)
+            self.assertEqual(loaded.run_id, state.run_id)
+            self.assertEqual(loaded.engine, ENGINE_NAME)
+            assert loaded.current_unit is not None
+            self.assertEqual(loaded.current_unit.ref, "bug-x.md")
+
+    def test_refuse_foreign_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = create_run(root, mode="ticket", model="auto", ticket="x")
+            path = root / ".bmad-orchestrate" / "runs" / state.run_id / "state.json"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["engine"] = "other-engine"
+            path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaises(Exception) as ctx:
+                load_run(root, state.run_id)
+            self.assertIn("foreign engine", str(ctx.exception))
+
+    def test_resolve_and_confirm(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = create_run(root, mode="ticket", model="auto", ticket="bug-x.md")
+            state.current_unit = UnitAttemptState(
+                ref="bug-x.md", phase="build", dev_attempts=2
+            )
+            pause_run(
+                root, state, reason=PAUSE_BLOCKED, detail="blocked", ticket="bug-x.md"
+            )
+            resolve_blocked(root, state, ticket="bug-x.md")
+            self.assertEqual(state.status, "running")
+            assert state.current_unit is not None
+            self.assertEqual(state.current_unit.dev_attempts, 0)
+
+            pause_run(
+                root,
+                state,
+                reason=PAUSE_PLAN_CHECKPOINT,
+                detail="plan",
+                ticket="bug-x.md",
+            )
+            confirm_parked(root, state, ticket="bug-x.md")
+            self.assertEqual(state.status, "running")
+            self.assertEqual(state.current_unit.phase, "build")
+            self.assertTrue(state.current_unit.extra.get("plan_checkpoint_cleared"))
+
+
+class WorktreeNamingTests(unittest.TestCase):
+    def test_branch_and_path(self) -> None:
+        self.assertEqual(
+            worktree_branch_name("20260101T000000-abcd", "bug-x.md"),
+            "bmad-orch/20260101t000000-abcd/bug-x.md",
+        )
+        root = Path("/repo")
+        path = worktree_path_for(root, "run1", "Epic One")
+        self.assertEqual(
+            path, root / ".bmad-orchestrate" / "worktrees" / "run1" / "epic-one"
+        )
+
+
+class PlateauDeferTests(unittest.TestCase):
+    def test_plateau_after_exhausted_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "plan.md"
+            plan.parent.mkdir(parents=True, exist_ok=True)
+            plan.write_text("---\nstatus: in-progress\n---\n", encoding="utf-8")
+            report = RunReport()
+            policy = Policy()
+            policy.limits.max_dev_attempts = 2
+            policy.verify.require_diff = False
+            policy.review.trigger = "never"
+            policy.scm.isolation = "inplace"
+            policy.scm.remote = "none"
+            run_state = create_run(root, mode="ticket", model="auto", ticket="bug-x.md")
+            found = {
+                "ref": "bug-x.md",
+                "plan": str(plan),
+                "tracker_id": "",
+                "type": "bug",
+                "title": "x",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+            agent = AgentRunResult(
+                status="finished",
+                usage=None,
+                agent_id="a1",
+                run_id="r1",
+                error=None,
+            )
+            bad = mock.Mock(
+                ok=False,
+                plan_status="in-progress",
+                plan_path=plan,
+                plan_fm={"status": "in-progress"},
+                result_path=None,
+                status_from_result_only=False,
+                summary="verify failed",
+                command_outputs=["fail"],
+                messages=["verify failed"],
+            )
+            with (
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch", return_value="bmad/x"),
+                mock.patch.object(pipe, "run_cursor_agent", return_value=agent),
+                mock.patch("bmad_orchestrate.pipeline.verify_unit", return_value=bad),
+                mock.patch.object(
+                    scm_mod,
+                    "run_git",
+                    return_value=mock.Mock(stdout="abc\n", returncode=0),
+                ),
+            ):
+                result = pipe.process_ticket(
+                    project_root=root,
+                    ref="bug-x.md",
+                    report=report,
+                    model="auto",
+                    dry_run=False,
+                    no_push=True,
+                    policy=policy,
+                    run_state=run_state,
+                )
+            self.assertIsNone(result)
+            self.assertEqual(report.units[-1].outcome, "plateau_deferred")
+            self.assertIn("bug-x.md", run_state.deferred_refs)
+
+
+class SweepHarvestTests(unittest.TestCase):
+    def test_parse_and_close_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "deferred-work.md"
+            path.write_text(
+                "# Deferred work\n\n"
+                "- source_plan: `plans/a-plan.md`\n"
+                "  summary: leftover test\n"
+                "  evidence: saw it\n"
+                "  severity: low\n",
+                encoding="utf-8",
+            )
+            entries = parse_ledger(path)
+            self.assertEqual(len(entries), 1)
+            self.assertEqual(entries[0].summary, "leftover test")
+            closed = close_ledger_entries(path, {entries[0].key})
+            self.assertEqual(closed, 1)
+            self.assertIn("status: closed", path.read_text(encoding="utf-8"))
+            self.assertEqual(parse_ledger(path), [])
+
+    def test_parse_triage_json(self) -> None:
+        keys = {"p::s"}
+        triage = parse_triage_response(
+            json.dumps(
+                {
+                    "resolved": ["p::s"],
+                    "skip": [],
+                    "blocked": [],
+                    "bundles": [
+                        {
+                            "title": "cleanup",
+                            "intent": "remove leftover",
+                            "entry_keys": ["p::s"],
+                            "needs_decision": False,
+                        }
+                    ],
+                }
+            ),
+            known_keys=keys,
+        )
+        self.assertEqual(triage.resolved_keys, ["p::s"])
+        self.assertEqual(len(triage.bundles), 1)
+        self.assertEqual(triage.bundles[0].intent, "remove leftover")
+
+
+class FreshReviewAgentTests(unittest.TestCase):
+    def test_review_creates_new_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = root / "plan.md"
+            plan.write_text(
+                "---\nstatus: built\nfollowup_review_recommended: true\ndeferred: []\n---\n",
+                encoding="utf-8",
+            )
+            report = RunReport()
+            policy = Policy()
+            policy.limits.max_dev_attempts = 1
+            policy.limits.max_review_cycles = 1
+            policy.review.trigger = "recommended"
+            policy.review.max_followup_reviews = 1
+            policy.verify.require_diff = False
+            policy.scm.isolation = "inplace"
+            policy.scm.remote = "none"
+            policy.gates.done_checkpoint = False
+            run_state = create_run(root, mode="ticket", model="auto", ticket="bug-x.md")
+            found = {
+                "ref": "bug-x.md",
+                "plan": str(plan),
+                "tracker_id": "",
+                "type": "bug",
+                "title": "x",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+            agents = [
+                AgentRunResult("ok", None, "implementer", "r1"),
+                AgentRunResult("ok", None, "reviewer", "r2"),
+            ]
+            calls: list[dict] = []
+
+            def fake_agent(**kwargs):
+                calls.append(kwargs)
+                return agents.pop(0)
+
+            ok = mock.Mock(
+                ok=True,
+                plan_status="built",
+                plan_path=plan,
+                plan_fm={
+                    "status": "built",
+                    "followup_review_recommended": True,
+                    "deferred": [],
+                },
+                result_path=None,
+                status_from_result_only=False,
+                summary="ok",
+                command_outputs=[],
+                messages=[],
+            )
+            with (
+                mock.patch.object(pipe, "tickets_find", return_value=found),
+                mock.patch.object(pipe, "require_clean_tree"),
+                mock.patch.object(pipe, "checkout_work_branch", return_value="bmad/x"),
+                mock.patch.object(pipe, "run_cursor_agent", side_effect=fake_agent),
+                mock.patch.object(pipe, "tickets_mark_done"),
+                mock.patch.object(pipe, "land_unit", return_value=None),
+                mock.patch.object(pipe, "epic_fully_done", return_value=False),
+                mock.patch("bmad_orchestrate.pipeline.verify_unit", return_value=ok),
+                mock.patch.object(
+                    scm_mod,
+                    "run_git",
+                    return_value=mock.Mock(stdout="abc\n", returncode=0),
+                ),
+            ):
+                pipe.process_ticket(
+                    project_root=root,
+                    ref="bug-x.md",
+                    report=report,
+                    model="auto",
+                    dry_run=False,
+                    no_push=True,
+                    policy=policy,
+                    run_state=run_state,
+                )
+            self.assertGreaterEqual(len(calls), 2)
+            # Review call must not resume the implementer.
+            self.assertIsNone(calls[1].get("resume_agent_id"))
+            self.assertIn("follow-up review", calls[1]["prompt"])
+            self.assertEqual(report.units[-1].outcome, "done")
+
+
+if __name__ == "__main__":
+    unittest.main()

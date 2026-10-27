@@ -5,6 +5,9 @@
 _bmad-output/
 _bmad/render/
 
+# Local BMAD orchestrate runs / worktrees / policy overrides
+.bmad-orchestrate/
+
 # Local textbooks
 textbooks/
 
