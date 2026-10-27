@@ -202,7 +202,7 @@ npm run typecheck
 npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 ```
 
-**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
+**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
 
 ### Ingest job stub
 

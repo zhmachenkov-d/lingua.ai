@@ -60,6 +60,25 @@ jobs:
       - run: uv sync --extra dev
       - run: uv run pytest -m integration_db
 
+  api-unit:
+    name: api pytest unit
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev
+      - run: uv run pytest -m "not integration_db"
+
   web-quality:
     name: web lint + format + typecheck
     runs-on: ubuntu-latest

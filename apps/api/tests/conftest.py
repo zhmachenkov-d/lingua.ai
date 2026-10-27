@@ -28,6 +28,11 @@ def pytest_collection_modifyitems(config, items) -> None:
     marked = [i for i in items if "integration_db" in i.keywords]
     if not marked:
         return
+    # This conftest hook runs before `_pytest.mark` deselection; when CI selects
+    # only unmarked tests, do not require DATABASE_URL for still-present marked items.
+    markexpr = (config.option.markexpr or "").strip()
+    if markexpr == "not integration_db":
+        return
     url = _database_url()
     reason = "integration_db: DATABASE_URL not set (Compose db required) — NOT verified"
     if url:
@@ -42,14 +47,19 @@ def pytest_collection_modifyitems(config, items) -> None:
 
 
 def pytest_collection_finish(session) -> None:
-    """Under CI, fail if -m integration_db selected zero tests."""
+    """Under CI, fail if a CI markexpr selected zero tests."""
     if not _in_ci():
         return
-    # Exact match: CI job uses `-m integration_db`. Avoid matching `not integration_db`.
-    if (session.config.option.markexpr or "").strip() != "integration_db":
+    markexpr = (session.config.option.markexpr or "").strip()
+    # Exact match only — `not integration_db` must not satisfy `integration_db`.
+    if markexpr == "integration_db":
+        label = "integration_db"
+    elif markexpr == "not integration_db":
+        label = "non-integration_db"
+    else:
         return
     if not session.items:
-        pytest.exit("CI: zero integration_db tests collected", returncode=1)
+        pytest.exit(f"CI: zero {label} tests collected", returncode=1)
 
 
 @pytest.fixture
