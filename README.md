@@ -125,7 +125,7 @@ Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` 
 
 **Stuck lock / live or dead holder:** advisory locks are released when the holding Postgres session ends, so a crashed api frees the lock. A live holder may still be draining a timed-out migrate/setup worker (peers wait up to the lock-wait bound, then see lock timeout). If a second api times out waiting, check for a live holder (`SELECT pid, state, query FROM pg_stat_activity WHERE pid IN (SELECT pid FROM pg_locks WHERE locktype='advisory');`), then restart the failed api once the holder exits or is terminated.
 
-**Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9).
+**Short-term memory source of truth:** the LangGraph checkpointer (`AsyncPostgresSaver`) is the STM SoT. The `Session` table (`session`) is a **non-authoritative mirror** — it is **not the source of truth** for STM, must never be read or written as if it were, and the checkpointer wins on any disagreement (AD-3, AD-9). After each successful Router checkpointer snapshot, a best-effort writer upserts one Session row for the MVP learner (`active_agent=Router`); mirror write failures are logged and must not fail the turn.
 
 ### LearnerProfile CEFR (api write path)
 
