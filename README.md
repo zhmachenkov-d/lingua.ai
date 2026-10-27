@@ -22,13 +22,13 @@ Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the
 
 | Variable            | Required?                                                   | Purpose                                                   | How to obtain                                                                           |
 | ------------------- | ----------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + derived `DATABASE_URL` for `api` | Choose a local username (example uses `lingua`)                                         |
-| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (same derivation)                       | Choose a local password; keep it out of git                                             |
+| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + credential parts for `api` URL   | Choose a local username (example uses `lingua`)                                         |
+| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (raw secret for api URL construction)   | Choose a local password; keep it out of git                                             |
 | `POSTGRES_DB`       | **Yes**                                                     | Database name                                             | Choose a local name (example uses `lingua`)                                             |
 | `DEEPSEEK_API_KEY`  | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek)                         | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
 | `GH_TOKEN`          | No (Compose ignores it)                                     | Host GitHub CLI / Codespaces only                         | Optional; leave empty for Compose                                                       |
 
-`DATABASE_URL` is **not** a host secret — Compose builds it from the three `POSTGRES_*` values (`@db` on the default stack, `@127.0.0.1` on `compose.dev.yaml`).
+`DATABASE_URL` is **not** a host secret — Compose passes `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` (`db` on the default stack, `127.0.0.1` on `compose.dev.yaml`) into `api`, which builds a percent-encoded `postgresql://` URL so passwords with `@`, `:`, `/`, etc. still parse. CI and local tests may set an explicit `DATABASE_URL` instead.
 
 ### Wipe / reset (second deploy / SM-2 isolation)
 
@@ -117,7 +117,7 @@ On startup the `api` prepares the shared Postgres itself — no separate migrati
 3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; same **120 s** loud-fail bound; lock held through drain)
 4. release the lock — after both steps have returned (or after the timed-out step’s worker finishes when step 2 fails the bound and step 3 never starts). A work timeout fails startup loudly without abandoning in-flight work; a hung worker pins the lock until the process or session dies
 
-Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If `DATABASE_URL` is missing, Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
+Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If DB config is missing (no explicit `DATABASE_URL` and incomplete `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST`), Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
 
 **Single-writer MVP:** one `api` replica is the migrator. The advisory lock serializes concurrent starts (the second waits, then re-runs the idempotent sequence), but multi-replica migration orchestration is out of scope. Alembic downgrade is out of scope.
 

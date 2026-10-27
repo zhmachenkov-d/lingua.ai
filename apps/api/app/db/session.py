@@ -1,4 +1,4 @@
-"""Request-scoped async SQLAlchemy session (Compose DATABASE_URL)."""
+"""Request-scoped async SQLAlchemy session (via get_database_url())."""
 
 from collections.abc import AsyncIterator
 

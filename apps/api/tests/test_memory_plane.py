@@ -272,10 +272,57 @@ def test_session_non_sot_wording_in_model_and_readme() -> None:
 
 def test_missing_database_url_fails_loudly(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    with pytest.raises(DatabaseConfigError, match="DATABASE_URL"):
+    for key in (
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DB",
+        "POSTGRES_HOST",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(DatabaseConfigError, match="DATABASE_URL.*percent-encodes"):
         get_database_url()
     with pytest.raises(DatabaseConfigError):
         asyncio.run(bootstrap())
+
+
+def test_database_url_encodes_reserved_password_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: raw Compose interpolation of passwords with @ : / breaks URL parse."""
+    from urllib.parse import unquote, urlsplit
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_USER", "lingua")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss:w/ord")
+    monkeypatch.setenv("POSTGRES_DB", "lingua")
+    monkeypatch.setenv("POSTGRES_HOST", "db")
+
+    # Defect shape: unencoded interpolation is not a single userinfo@host URL.
+    broken = "postgresql://lingua:p@ss:w/ord@db:5432/lingua"
+    broken_parts = urlsplit(broken)
+    assert unquote(broken_parts.password or "") != "p@ss:w/ord"
+
+    url = get_database_url()
+    parts = urlsplit(url)
+    assert parts.scheme == "postgresql"
+    assert parts.hostname == "db"
+    assert parts.port == 5432
+    assert unquote(parts.username or "") == "lingua"
+    assert unquote(parts.password or "") == "p@ss:w/ord"
+    assert parts.path == "/lingua"
+    assert to_sqlalchemy_url(url).startswith("postgresql+psycopg://")
+
+
+def test_incomplete_postgres_components_names_encoding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("POSTGRES_USER", "lingua")
+    monkeypatch.setenv("POSTGRES_PASSWORD", "p@ss")
+    monkeypatch.delenv("POSTGRES_DB", raising=False)
+    monkeypatch.delenv("POSTGRES_HOST", raising=False)
+    with pytest.raises(DatabaseConfigError, match="percent-encodes"):
+        get_database_url()
 
 
 def test_unreachable_db_fails_loudly() -> None:
