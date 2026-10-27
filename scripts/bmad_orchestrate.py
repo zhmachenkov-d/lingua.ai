@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 import urllib.error
@@ -75,6 +76,8 @@ class TokenUsage:
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
 
     def add(self, other: TokenUsage | None) -> None:
         if other is None:
@@ -82,6 +85,8 @@ class TokenUsage:
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.total_tokens += other.total_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
 
 
 @dataclass
@@ -131,6 +136,8 @@ class RunReport:
                         input_tokens=u.tokens.get("input_tokens", 0),
                         output_tokens=u.tokens.get("output_tokens", 0),
                         total_tokens=u.tokens.get("total_tokens", 0),
+                        cache_read_tokens=u.tokens.get("cache_read_tokens", 0),
+                        cache_write_tokens=u.tokens.get("cache_write_tokens", 0),
                     )
                 )
             if u.pr_url:
@@ -145,6 +152,8 @@ class RunReport:
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
                 "total_tokens": usage.total_tokens,
+                "cache_read_tokens": usage.cache_read_tokens,
+                "cache_write_tokens": usage.cache_write_tokens,
             },
         }
 
@@ -158,16 +167,18 @@ class RunReport:
             "totals": self.totals,
         }
 
-    def print_human(self, stream=sys.stderr) -> None:
+    def format_human(self) -> str:
         self.finalize_totals()
         detail = f" — {self.shutdown_detail}" if self.shutdown_detail else ""
-        print("=== BMAD orchestrate report ===", file=stream)
-        print(f"Shutdown: {self.shutdown}{detail}", file=stream)
+        lines: list[str] = [
+            "=== BMAD orchestrate report ===",
+            f"Shutdown: {self.shutdown}{detail}",
+        ]
         tickets = [u for u in self.units if u.kind == "ticket"]
         retros = [u for u in self.units if u.kind == "retrospective"]
-        print("Tickets:", file=stream)
+        lines.append("Tickets:")
         if not tickets:
-            print("  (none)", file=stream)
+            lines.append("  (none)")
         for u in tickets:
             tok = u.tokens["total_tokens"] if u.tokens else "null"
             extra = ""
@@ -177,53 +188,71 @@ class RunReport:
                 extra = f"  pr={u.pr_url}"
             elif u.reason:
                 extra = f"  reason={u.reason}"
-            print(
-                f"  {u.ref:<40} {u.outcome:<12} tokens={tok}  deferred={u.deferred_count}{extra}",
-                file=stream,
+            lines.append(
+                f"  {u.ref:<40} {u.outcome:<12} tokens={tok}  deferred={u.deferred_count}{extra}"
             )
-        print("Unrefined bugs:", file=stream)
+        lines.append("Unrefined bugs:")
         if not self.unrefined_bugs:
-            print("  none", file=stream)
+            lines.append("  none")
         else:
             for bug in self.unrefined_bugs:
                 title = bug.get("title") or ""
                 suffix = f"  {title}" if title else ""
-                print(f"  {bug.get('ref', '?')}{suffix}", file=stream)
-        print("Retrospectives:", file=stream)
+                lines.append(f"  {bug.get('ref', '?')}{suffix}")
+        lines.append("Retrospectives:")
         if not retros:
-            print("  none", file=stream)
+            lines.append("  none")
         else:
             for u in retros:
                 tok = u.tokens["total_tokens"] if u.tokens else "null"
                 extra = f"  pr={u.pr_url}" if u.pr_url else ""
-                print(f"  {u.ref:<40} {u.outcome:<12} tokens={tok}{extra}", file=stream)
+                lines.append(f"  {u.ref:<40} {u.outcome:<12} tokens={tok}{extra}")
         t = self.totals
         tok = t["tokens"]
-        print(
+        cache_bits = ""
+        cache_read = int(tok.get("cache_read_tokens") or 0)
+        cache_write = int(tok.get("cache_write_tokens") or 0)
+        if cache_read or cache_write:
+            cache_bits = f"  cache_read={cache_read} cache_write={cache_write}"
+        lines.append(
             f"Totals: tickets={t['tickets']}  done={t['marked_done']}  "
-            f"tokens={tok['total_tokens']}  (in={tok['input_tokens']} out={tok['output_tokens']})  "
+            f"tokens={tok['total_tokens']}  (in={tok['input_tokens']} out={tok['output_tokens']})"
+            f"{cache_bits}  "
             f"deferred={t['deferred_items']}  retros={t['retrospectives']}  prs={t['prs']}  "
-            f"unrefined_bugs={len(self.unrefined_bugs)}",
-            file=stream,
+            f"unrefined_bugs={len(self.unrefined_bugs)}"
         )
+        return "\n".join(lines) + "\n"
+
+    def print_human(self, stream=sys.stderr) -> None:
+        print(self.format_human(), end="", file=stream)
 
 
 def format_token_cost(usage: TokenUsage | None) -> str:
     if usage is None:
         return "tokens=null"
-    return (
+    parts = [
         f"tokens in={usage.input_tokens} out={usage.output_tokens} "
         f"total={usage.total_tokens}"
-    )
+    ]
+    if usage.cache_read_tokens or usage.cache_write_tokens:
+        parts.append(
+            f"cache_read={usage.cache_read_tokens} cache_write={usage.cache_write_tokens}"
+        )
+    return " ".join(parts)
 
 
 def format_token_cost_from_report(report: RunReport) -> str:
     report.finalize_totals()
     tok = report.totals.get("tokens") or {}
-    return (
+    parts = [
         f"tokens in={tok.get('input_tokens', 0)} out={tok.get('output_tokens', 0)} "
         f"total={tok.get('total_tokens', 0)}"
-    )
+    ]
+    cache_read = int(tok.get("cache_read_tokens") or 0)
+    cache_write = int(tok.get("cache_write_tokens") or 0)
+    if cache_read or cache_write:
+        parts.append(f"cache_read={cache_read} cache_write={cache_write}")
+    return " ".join(parts)
 
 
 def log_cumulative_tokens(report: RunReport) -> None:
@@ -764,6 +793,159 @@ def tracker_mark_done(
     set_plan_status(plan_path, "done")
 
 
+def tracker_comment_github(
+    project_root: Path, *, tracker_id: str, body: str, cfg: dict[str, Any]
+) -> None:
+    tickets = _tickets_table(cfg)
+    repo = str(tickets.get("repo") or "").strip()
+    r_args = ["-R", repo] if repo else []
+    log.info("github comment issue=%s repo=%s", tracker_id, repo or "(default)")
+    _run_checked(
+        ["gh", "issue", "comment", tracker_id, *r_args, "--body", body],
+        cwd=project_root,
+    )
+
+
+def tracker_comment_jira(
+    project_root: Path, *, tracker_id: str, body: str, cfg: dict[str, Any]
+) -> None:
+    del cfg
+    log.info("jira comment key=%s", tracker_id)
+    with tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", suffix=".txt", delete=False
+    ) as tmp:
+        tmp.write(body)
+        tmp_path = tmp.name
+    try:
+        _run_checked(
+            [
+                "acli",
+                "jira",
+                "workitem",
+                "comment",
+                "create",
+                "--key",
+                tracker_id,
+                "--body-file",
+                tmp_path,
+            ],
+            cwd=project_root,
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+def tracker_comment_linear(
+    project_root: Path, *, tracker_id: str, body: str, cfg: dict[str, Any]
+) -> None:
+    del project_root, cfg
+    api_key = _require_env("LINEAR_API_KEY")
+    log.info("linear comment issue=%s", tracker_id)
+    payload = _http_json(
+        "POST",
+        "https://api.linear.app/graphql",
+        headers={"Authorization": api_key},
+        body={
+            "query": (
+                "mutation($issueId: String!, $body: String!) {"
+                "  commentCreate(input: { issueId: $issueId, body: $body }) {"
+                "    success"
+                "  }"
+                "}"
+            ),
+            "variables": {"issueId": tracker_id, "body": body},
+        },
+    )
+    success = (((payload or {}).get("data") or {}).get("commentCreate") or {}).get(
+        "success"
+    )
+    if not success:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"linear commentCreate failed: {payload}"
+        )
+
+
+def tracker_comment_notion(
+    project_root: Path, *, tracker_id: str, body: str, cfg: dict[str, Any]
+) -> None:
+    del project_root, cfg
+    token = _require_env("NOTION_TOKEN")
+    page_id = _notion_page_id(tracker_id)
+    # Notion rich_text items are capped at 2000 characters each.
+    chunks = [body[i : i + 2000] for i in range(0, max(len(body), 1), 2000)] or [""]
+    rich_text = [{"type": "text", "text": {"content": chunk}} for chunk in chunks[:100]]
+    log.info("notion comment page=%s chunks=%s", page_id, len(rich_text))
+    _http_json(
+        "POST",
+        "https://api.notion.com/v1/comments",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": "2022-06-28",
+        },
+        body={"parent": {"page_id": page_id}, "rich_text": rich_text},
+    )
+
+
+def tracker_comment_trello(
+    project_root: Path, *, tracker_id: str, body: str, cfg: dict[str, Any]
+) -> None:
+    del project_root, cfg
+    key = _require_env("TRELLO_API_KEY")
+    token = _require_env("TRELLO_TOKEN")
+    auth = {"key": key, "token": token, "text": body}
+    url = (
+        f"https://api.trello.com/1/cards/{urllib.parse.quote(tracker_id)}/actions/comments?"
+        + urllib.parse.urlencode(auth)
+    )
+    log.info("trello comment card=%s", tracker_id)
+    _http_json("POST", url)
+
+
+TrackerCommentFn = Callable[..., None]
+
+TRACKER_COMMENT: dict[str, TrackerCommentFn] = {
+    "github": tracker_comment_github,
+    "jira": tracker_comment_jira,
+    "linear": tracker_comment_linear,
+    "notion": tracker_comment_notion,
+    "trello": tracker_comment_trello,
+}
+
+
+def tracker_post_report(
+    project_root: Path,
+    *,
+    tracker_id: str,
+    body: str,
+) -> None:
+    """Post a human RunReport comment to the ticket's tracker. Non-fatal on error."""
+    tid = tracker_id.strip()
+    if not tid:
+        return
+    try:
+        cfg = load_store_config(project_root)
+        store = str(_tickets_table(cfg).get("store") or "repo")
+        handler = TRACKER_COMMENT.get(store)
+        if handler is None:
+            log.warning(
+                "tracker comment skipped store=%s tracker_id=%s (no adapter)",
+                store,
+                tid,
+            )
+            return
+        log.info("tracker comment store=%s tracker_id=%s", store, tid)
+        handler(project_root, tracker_id=tid, body=body, cfg=cfg)
+    except Exception as err:  # noqa: BLE001 — comment must not halt orchestration
+        log.warning(
+            "tracker comment failed tracker_id=%s: %s",
+            tid,
+            getattr(err, "detail", None) or err,
+        )
+
+
 # --------------------------------------------------------------------------- plan / deferred IO
 
 
@@ -973,12 +1155,200 @@ def _gh_pr_view(project_root: Path, fields: str) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
-def _pr_title_for_refs(epic: str | None, refs: list[str]) -> str:
+_PR_EXCERPT_CAP = 800
+
+
+def _commit_type_for_ticket(ticket_type: str | None, *, kind: str = "ticket") -> str:
+    if kind == "retrospective":
+        return "chore"
+    t = (ticket_type or "").strip().lower()
+    if t in {"bug", "bugfix"}:
+        return "fix"
+    return "feat"
+
+
+def _pr_title_for_ticket(
+    *,
+    epic: str | None,
+    refs: list[str],
+    ticket_type: str | None = None,
+    title: str | None = None,
+    kind: str = "ticket",
+) -> str:
+    commit_type = _commit_type_for_ticket(ticket_type, kind=kind)
     epic_slug = epic or "build"
-    title = f"feat({epic_slug}): orchestrated build for {', '.join(refs)}"
-    if len(title) > 72:
-        title = f"feat({epic_slug}): orchestrated build"
-    return title
+    if kind == "retrospective":
+        desc = "retrospective"
+    else:
+        raw = (title or "").strip()
+        if raw:
+            desc = raw[0].lower() + raw[1:]
+        else:
+            desc = f"orchestrated build for {', '.join(refs)}"
+    prefix = f"{commit_type}({epic_slug}): "
+    budget = 72 - len(prefix)
+    if budget < 1:
+        return f"{commit_type}({epic_slug})"[:72]
+    if len(desc) > budget:
+        desc = desc[: max(budget - 1, 0)].rstrip() + "…"
+    return prefix + desc
+
+
+def _tracker_display(store: str, tracker_id: str | None) -> str | None:
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return None
+    if store == "github":
+        return f"#{tid.lstrip('#')}"
+    return tid
+
+
+def _plan_body_text(plan_path: Path) -> str:
+    text = plan_path.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end >= 0:
+            return text[end + 4 :]
+    return text
+
+
+def _extract_problem_approach(text: str) -> str | None:
+    contract = re.search(
+        r"<intent-contract>(.*?)</intent-contract>",
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    block = contract.group(1) if contract else text
+    problem = re.search(
+        r"\*\*Problem:\*\*\s*(.+?)(?=\n\s*\*\*[A-Z]|\n\n|\Z)", block, flags=re.DOTALL
+    )
+    approach = re.search(
+        r"\*\*Approach:\*\*\s*(.+?)(?=\n\s*\*\*[A-Z]|\n\n|\Z)", block, flags=re.DOTALL
+    )
+    parts: list[str] = []
+    if problem:
+        parts.append(f"**Problem:** {problem.group(1).strip()}")
+    if approach:
+        parts.append(f"**Approach:** {approach.group(1).strip()}")
+    return "\n\n".join(parts) if parts else None
+
+
+def _extract_auto_run_summary(text: str) -> str | None:
+    section = re.search(
+        r"^## Auto Run Result\s*\n(.*?)(?=^## |\Z)",
+        text,
+        flags=re.DOTALL | re.MULTILINE,
+    )
+    if not section:
+        return None
+    body = section.group(1)
+    summary = re.search(r"-\s*\*\*Summary:\*\*\s*(.+)", body)
+    if summary:
+        return summary.group(1).strip()
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            return stripped
+    return None
+
+
+def _extract_plan_excerpt(plan_path: Path | None) -> str:
+    if not plan_path or not plan_path.is_file():
+        return ""
+    text = _plan_body_text(plan_path)
+    excerpt = _extract_problem_approach(text)
+    if not excerpt:
+        excerpt = _extract_auto_run_summary(text)
+    if not excerpt:
+        fm = read_frontmatter(plan_path)
+        bits: list[str] = []
+        title = str(fm.get("title") or "").strip()
+        if title:
+            bits.append(title)
+        for para in re.split(r"\n\s*\n", text):
+            cleaned = para.strip()
+            if not cleaned or cleaned.startswith("#") or cleaned.startswith("<"):
+                continue
+            bits.append(cleaned)
+            if len(bits) >= 3:
+                break
+        excerpt = "\n\n".join(bits)
+    if len(excerpt) > _PR_EXCERPT_CAP:
+        excerpt = excerpt[: _PR_EXCERPT_CAP - 1].rstrip() + "…"
+    return excerpt
+
+
+def _extract_verification_checks(plan_path: Path | None) -> list[str]:
+    if not plan_path or not plan_path.is_file():
+        return []
+    text = _plan_body_text(plan_path)
+    section = re.search(
+        r"^## Verification\s*\n(.*?)(?=^## |\Z)", text, flags=re.DOTALL | re.MULTILINE
+    )
+    if not section:
+        return []
+    checks: list[str] = []
+    for line in section.group(1).splitlines():
+        cleaned = line.strip()
+        if not cleaned:
+            continue
+        cleaned = re.sub(r"^[-*]\s+", "", cleaned)
+        cleaned = re.sub(r"^\*\*[^*]+\*\*:?\s*", "", cleaned)
+        if not cleaned:
+            continue
+        if len(cleaned) > 120:
+            cleaned = cleaned[:119] + "…"
+        checks.append(cleaned)
+        if len(checks) >= 5:
+            break
+    return checks
+
+
+def _pr_body_for_ticket(
+    *,
+    project_root: Path,
+    ref: str,
+    title: str | None = None,
+    tracker_id: str | None = None,
+    plan_path: Path | None = None,
+    kind: str = "ticket",
+) -> str:
+    if kind == "retrospective":
+        return "\n".join(
+            [
+                "## Summary",
+                f"- Retrospective for `{ref}`",
+                "",
+                "## Test plan",
+                "- [ ] Review retrospective output",
+                "- [ ] Confirm CI on this PR",
+            ]
+        )
+    cfg = load_store_config(project_root)
+    store = str(_tickets_table(cfg).get("store") or "repo")
+    tracker = _tracker_display(store, tracker_id)
+    lines = [
+        "## Summary",
+        f"- Ticket: `{ref}`",
+    ]
+    if tracker:
+        lines.append(f"- Tracker: {tracker}")
+    if title:
+        lines.append(f"- Title: {title}")
+    excerpt = _extract_plan_excerpt(plan_path)
+    if excerpt:
+        lines.extend(["", "## Plan excerpt", excerpt])
+    lines.extend(
+        [
+            "",
+            "## Test plan",
+            "- [ ] Review agent-produced commits and plan status",
+            "- [ ] Confirm CI on this PR",
+        ]
+    )
+    for check in _extract_verification_checks(plan_path):
+        lines.append(f"- [ ] {check}")
+    return "\n".join(lines)
 
 
 def _is_merge_not_ready(err: str) -> bool:
@@ -1110,6 +1480,11 @@ def ensure_push_and_pr(
     refs: list[str],
     no_push: bool,
     dry_run: bool,
+    ticket_type: str | None = None,
+    title: str | None = None,
+    tracker_id: str | None = None,
+    plan_path: Path | None = None,
+    kind: str = "ticket",
 ) -> str | None:
     if dry_run or no_push:
         log.info(
@@ -1140,19 +1515,23 @@ def ensure_push_and_pr(
         log.info("existing PR url=%s", url)
         return str(url) if url else None
 
-    title = _pr_title_for_refs(epic, refs)
-    base = default_branch(project_root)
-    body = "\n".join(
-        [
-            "## Summary",
-            *(f"- Orchestrated BMAD build for `{r}`" for r in refs),
-            "",
-            "## Test plan",
-            "- [ ] Review agent-produced commits and plan status",
-            "- [ ] Confirm CI on this PR",
-        ]
+    pr_title = _pr_title_for_ticket(
+        epic=epic,
+        refs=refs,
+        ticket_type=ticket_type,
+        title=title,
+        kind=kind,
     )
-    log.info("gh pr create title=%s base=%s", title, base)
+    base = default_branch(project_root)
+    body = _pr_body_for_ticket(
+        project_root=project_root,
+        ref=refs[0] if refs else (epic or "unknown"),
+        title=title,
+        tracker_id=tracker_id,
+        plan_path=plan_path,
+        kind=kind,
+    )
+    log.info("gh pr create title=%s base=%s", pr_title, base)
     create = subprocess.run(
         [
             "gh",
@@ -1161,7 +1540,7 @@ def ensure_push_and_pr(
             "--base",
             base,
             "--title",
-            title,
+            pr_title,
             "--body",
             body,
         ],
@@ -1193,6 +1572,11 @@ def ensure_push_pr_and_merge(
     refs: list[str],
     no_push: bool,
     dry_run: bool,
+    ticket_type: str | None = None,
+    title: str | None = None,
+    tracker_id: str | None = None,
+    plan_path: Path | None = None,
+    kind: str = "ticket",
 ) -> str | None:
     """Push, ensure PR, squash-merge with conventional subject, return to default."""
     if dry_run or no_push:
@@ -1207,10 +1591,19 @@ def ensure_push_pr_and_merge(
         refs=refs,
         no_push=False,
         dry_run=False,
+        ticket_type=ticket_type,
+        title=title,
+        tracker_id=tracker_id,
+        plan_path=plan_path,
+        kind=kind,
     )
     info = _gh_pr_view(project_root, "url,title")
-    subject = str((info or {}).get("title") or "").strip() or _pr_title_for_refs(
-        epic, refs
+    subject = str((info or {}).get("title") or "").strip() or _pr_title_for_ticket(
+        epic=epic,
+        refs=refs,
+        ticket_type=ticket_type,
+        title=title,
+        kind=kind,
     )
     if info and info.get("url"):
         url = str(info["url"])
@@ -1400,20 +1793,28 @@ def _emit_agent_block(
         _emit_agent_line(kind, "… truncated")
 
 
+def _assistant_text(message: Any) -> str:
+    content = getattr(getattr(message, "message", None), "content", None) or ()
+    parts: list[str] = []
+    for block in content:
+        if getattr(block, "type", None) == "text":
+            text = getattr(block, "text", "") or ""
+            if text:
+                parts.append(text)
+    return "".join(parts)
+
+
 def _emit_agent_message(message: Any) -> None:
     msg_type = getattr(message, "type", None)
     if msg_type == "assistant":
-        content = getattr(getattr(message, "message", None), "content", None) or ()
-        for block in content:
-            if getattr(block, "type", None) == "text":
-                text = getattr(block, "text", "") or ""
-                if text:
-                    _emit_agent_block(
-                        "assistant",
-                        text,
-                        char_cap=_AGENT_ASSIST_CHAR_CAP,
-                        line_cap=_AGENT_ASSIST_LINE_CAP,
-                    )
+        text = _assistant_text(message)
+        if text:
+            _emit_agent_block(
+                "assistant",
+                text,
+                char_cap=_AGENT_ASSIST_CHAR_CAP,
+                line_cap=_AGENT_ASSIST_LINE_CAP,
+            )
         return
     if msg_type == "thinking":
         text = getattr(message, "text", "") or ""
@@ -1464,6 +1865,61 @@ def _emit_agent_message(message: Any) -> None:
         _emit_agent_line("task", line.strip())
 
 
+class _AgentTextCoalescer:
+    """Buffer consecutive thinking/assistant text deltas into readable blocks."""
+
+    def __init__(self) -> None:
+        self._kind: str | None = None
+        self._parts: list[str] = []
+
+    def flush(self) -> None:
+        if not self._kind or not self._parts:
+            self._kind = None
+            self._parts = []
+            return
+        text = "".join(self._parts)
+        kind = self._kind
+        self._kind = None
+        self._parts = []
+        if kind == "assistant":
+            _emit_agent_block(
+                "assistant",
+                text,
+                char_cap=_AGENT_ASSIST_CHAR_CAP,
+                line_cap=_AGENT_ASSIST_LINE_CAP,
+            )
+        elif kind == "thinking":
+            _emit_agent_block(
+                "thinking",
+                text,
+                char_cap=_AGENT_THINK_CHAR_CAP,
+                line_cap=_AGENT_THINK_LINE_CAP,
+            )
+
+    def feed(self, message: Any) -> None:
+        msg_type = getattr(message, "type", None)
+        if msg_type == "assistant":
+            text = _assistant_text(message)
+            if not text:
+                return
+            if self._kind not in (None, "assistant"):
+                self.flush()
+            self._kind = "assistant"
+            self._parts.append(text)
+            return
+        if msg_type == "thinking":
+            text = getattr(message, "text", "") or ""
+            if not text:
+                return
+            if self._kind not in (None, "thinking"):
+                self.flush()
+            self._kind = "thinking"
+            self._parts.append(text)
+            return
+        self.flush()
+        _emit_agent_message(message)
+
+
 def _soft_close_agent(agent: Any, err_type: type[BaseException]) -> None:
     if agent is None:
         return
@@ -1494,6 +1950,7 @@ def run_cursor_agent(
     model: str,
     prompt: str,
     dry_run: bool,
+    resume_agent_id: str | None = None,
 ) -> AgentRunResult:
     if dry_run:
         log.info("[dry-run] agent prompt:\n%s", prompt)
@@ -1503,26 +1960,57 @@ def run_cursor_agent(
     if not api_key:
         raise OrchestratorHalt(SHUTDOWN_ERROR, "CURSOR_API_KEY is not set")
 
-    from cursor_sdk import Agent, CursorAgentError, LocalAgentOptions
+    from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
 
     resolved_model = resolve_agent_model(model)
-    log.info("agent start model=%s", model)
+    local_opts = LocalAgentOptions(cwd=str(project_root), setting_sources=["project"])
+    agent_options = AgentOptions(
+        model=resolved_model,
+        api_key=api_key,
+        local=local_opts,
+    )
+    log.info(
+        "agent start model=%s resume_agent_id=%s",
+        model,
+        resume_agent_id or "(none)",
+    )
+    use_resume = bool(resume_agent_id)
 
     for attempt in range(1, AGENT_START_MAX_ATTEMPTS + 1):
         agent: Any = None
         phase = "create"
         try:
-            agent = Agent.create(
-                model=resolved_model,
-                api_key=api_key,
-                local=LocalAgentOptions(
-                    cwd=str(project_root), setting_sources=["project"]
-                ),
+            if use_resume and resume_agent_id:
+                phase = "resume"
+                try:
+                    agent = Agent.resume(resume_agent_id, agent_options)
+                    log.info("agent resume agent_id=%s", resume_agent_id)
+                except Exception as resume_err:  # noqa: BLE001 — fall back to create
+                    detail = getattr(resume_err, "message", None) or resume_err
+                    log.warning(
+                        "agent resume failed; falling back to create detail=%s",
+                        detail,
+                    )
+                    use_resume = False
+                    agent = None
+
+            if agent is None:
+                phase = "create"
+                agent = Agent.create(
+                    model=resolved_model,
+                    api_key=api_key,
+                    local=local_opts,
+                )
+                log.info(
+                    "agent created agent_id=%s",
+                    getattr(agent, "agent_id", None) or getattr(agent, "agentId", None),
+                )
+
+            agent_id = (
+                getattr(agent, "agent_id", None)
+                or getattr(agent, "agentId", None)
+                or resume_agent_id
             )
-            agent_id = getattr(agent, "agent_id", None) or getattr(
-                agent, "agentId", None
-            )
-            log.info("agent created agent_id=%s", agent_id)
 
             phase = "send"
             run = agent.send(prompt)
@@ -1530,9 +2018,11 @@ def run_cursor_agent(
             log.info("agent sent agent_id=%s run_id=%s", agent_id, run_id)
 
             phase = "stream"
+            coalescer = _AgentTextCoalescer()
             _emit_agent_line("status", "----- begin -----")
             for message in run.messages():
-                _emit_agent_message(message)
+                coalescer.feed(message)
+            coalescer.flush()
 
             phase = "wait"
             result = run.wait()
@@ -1543,6 +2033,12 @@ def run_cursor_agent(
                     input_tokens=int(getattr(raw_usage, "input_tokens", 0) or 0),
                     output_tokens=int(getattr(raw_usage, "output_tokens", 0) or 0),
                     total_tokens=int(getattr(raw_usage, "total_tokens", 0) or 0),
+                    cache_read_tokens=int(
+                        getattr(raw_usage, "cache_read_tokens", 0) or 0
+                    ),
+                    cache_write_tokens=int(
+                        getattr(raw_usage, "cache_write_tokens", 0) or 0
+                    ),
                 )
             status = getattr(result, "status", None) or "unknown"
             _emit_agent_line(
@@ -1578,7 +2074,7 @@ def run_cursor_agent(
             _soft_close_agent(agent, CursorAgentError)
             agent = None
             if (
-                phase in {"create", "send"}
+                phase in {"create", "resume", "send"}
                 and err.is_retryable
                 and attempt < AGENT_START_MAX_ATTEMPTS
             ):
@@ -1611,6 +2107,8 @@ def usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
         "input_tokens": usage.input_tokens,
         "output_tokens": usage.output_tokens,
         "total_tokens": usage.total_tokens,
+        "cache_read_tokens": usage.cache_read_tokens,
+        "cache_write_tokens": usage.cache_write_tokens,
     }
 
 
@@ -1759,6 +2257,29 @@ def retro_prompt(epic_ref: str) -> str:
     return f"Run skill bmad-retrospective -H {epic_ref}. Headless."
 
 
+def _finish_ticket_unit(
+    *,
+    project_root: Path,
+    report: RunReport,
+    unit: UnitReport,
+    tracker_id: str | None,
+    shutdown: str | None = None,
+    shutdown_detail: str | None = None,
+) -> None:
+    """Record a ticket unit, then post the full RunReport to the tracker when terminal."""
+    report.add(unit)
+    log_cumulative_tokens(report)
+    if unit.outcome in {"dry_run", "followup"}:
+        return
+    tid = (tracker_id or "").strip()
+    if not tid:
+        return
+    if shutdown is not None:
+        report.shutdown = shutdown
+        report.shutdown_detail = shutdown_detail
+    tracker_post_report(project_root, tracker_id=tid, body=report.format_human())
+
+
 def process_ticket(
     *,
     project_root: Path,
@@ -1768,6 +2289,7 @@ def process_ticket(
     dry_run: bool,
     no_push: bool,
     followup_used: bool = False,
+    resume_agent_id: str | None = None,
 ) -> str | None:
     """Process one ticket. Returns epic slug if that epic just became fully done."""
     try:
@@ -1779,6 +2301,8 @@ def process_ticket(
 
     ticket_ref = str(found.get("ref") or ref)
     epic = found.get("epic")
+    ticket_type = str(found.get("type") or "").strip() or None
+    ticket_title = str(found.get("title") or "").strip() or None
     plan_path = Path(found["plan"]) if found.get("plan") else None
     plan_fm = read_frontmatter(plan_path) if plan_path else {}
     plan_status = str(plan_fm.get("status") or "")
@@ -1803,7 +2327,8 @@ def process_ticket(
 
     log.info(
         "ticket start ref=%s epic=%s plan_status=%s tracker_id=%s "
-        "plan_checkpoint=%s done_checkpoint=%s halt_after_planning=%s followup_used=%s",
+        "plan_checkpoint=%s done_checkpoint=%s halt_after_planning=%s followup_used=%s "
+        "resume_agent_id=%s",
         ticket_ref,
         epic,
         plan_status or "(none)",
@@ -1812,6 +2337,7 @@ def process_ticket(
         done_checkpoint,
         halt_after_planning,
         followup_used,
+        resume_agent_id or "(none)",
     )
 
     if not dry_run:
@@ -1820,7 +2346,11 @@ def process_ticket(
 
     prompt = build_prompt(ticket_ref, halt_after_planning=halt_after_planning)
     agent = run_cursor_agent(
-        project_root=project_root, model=model, prompt=prompt, dry_run=dry_run
+        project_root=project_root,
+        model=model,
+        prompt=prompt,
+        dry_run=dry_run,
+        resume_agent_id=resume_agent_id,
     )
 
     unit = UnitReport(
@@ -1835,21 +2365,33 @@ def process_ticket(
     if dry_run:
         unit.outcome = "dry_run"
         unit.plan_status = plan_status or None
-        report.add(unit)
-        log_cumulative_tokens(report)
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+        )
         return None
 
     if agent.error:
         unit.outcome = "error"
         unit.reason = agent.error
-        report.add(unit)
-        log_cumulative_tokens(report)
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+            shutdown=SHUTDOWN_ERROR,
+            shutdown_detail=agent.error,
+        )
         raise OrchestratorHalt(SHUTDOWN_ERROR, agent.error)
 
     # Re-read plan after agent
     try:
         found = tickets_find(project_root, ticket_ref)
         tracker_id = str(found.get("tracker_id") or "").strip() or tracker_id
+        ticket_type = str(found.get("type") or "").strip() or ticket_type
+        ticket_title = str(found.get("title") or "").strip() or ticket_title
     except OrchestratorHalt:
         pass
     plan_path = Path(found["plan"]) if found.get("plan") else plan_path
@@ -1867,11 +2409,16 @@ def process_ticket(
     if halt_after_planning:
         unit.outcome = "checkpoint"
         unit.reason = "plan_checkpoint: waiting for human plan approval"
-        report.add(unit)
-        log_cumulative_tokens(report)
-        raise OrchestratorHalt(
-            SHUTDOWN_PLAN_CHECKPOINT, f"ticket {ticket_ref}: plan checkpoint"
+        detail = f"ticket {ticket_ref}: plan checkpoint"
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+            shutdown=SHUTDOWN_PLAN_CHECKPOINT,
+            shutdown_detail=detail,
         )
+        raise OrchestratorHalt(SHUTDOWN_PLAN_CHECKPOINT, detail)
 
     if plan_status == "blocked":
         reason = str(
@@ -1879,17 +2426,30 @@ def process_ticket(
         )
         unit.outcome = "blocked"
         unit.reason = reason
-        report.add(unit)
-        log_cumulative_tokens(report)
-        raise OrchestratorHalt(SHUTDOWN_BLOCKED, f"ticket {ticket_ref}: {reason}")
+        detail = f"ticket {ticket_ref}: {reason}"
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+            shutdown=SHUTDOWN_BLOCKED,
+            shutdown_detail=detail,
+        )
+        raise OrchestratorHalt(SHUTDOWN_BLOCKED, detail)
 
     if plan_status not in ("built", "done"):
         unit.outcome = "error"
         unit.reason = (
             f"unexpected plan status after agent: {plan_status or '(missing)'}"
         )
-        report.add(unit)
-        log_cumulative_tokens(report)
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+            shutdown=SHUTDOWN_ERROR,
+            shutdown_detail=unit.reason,
+        )
         raise OrchestratorHalt(SHUTDOWN_ERROR, unit.reason)
 
     deferred_items = plan_fm.get("deferred") or []
@@ -1902,18 +2462,27 @@ def process_ticket(
     if done_checkpoint:
         unit.outcome = "checkpoint"
         unit.reason = "done_checkpoint: waiting for human continue"
-        report.add(unit)
-        log_cumulative_tokens(report)
-        raise OrchestratorHalt(
-            SHUTDOWN_DONE_CHECKPOINT, f"ticket {ticket_ref}: done checkpoint"
+        detail = f"ticket {ticket_ref}: done checkpoint"
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+            shutdown=SHUTDOWN_DONE_CHECKPOINT,
+            shutdown_detail=detail,
         )
+        raise OrchestratorHalt(SHUTDOWN_DONE_CHECKPOINT, detail)
 
     followup = bool(plan_fm.get("followup_review_recommended"))
     if followup and not followup_used:
         unit.outcome = "followup"
-        report.add(unit)
-        log_cumulative_tokens(report)
-        log.info("followup re-dispatch ref=%s", ticket_ref)
+        _finish_ticket_unit(
+            project_root=project_root,
+            report=report,
+            unit=unit,
+            tracker_id=tracker_id,
+        )
+        log.info("followup re-dispatch ref=%s agent_id=%s", ticket_ref, agent.agent_id)
         # One extra re-dispatch, then continue to mark policy on the second result.
         return process_ticket(
             project_root=project_root,
@@ -1923,6 +2492,7 @@ def process_ticket(
             dry_run=dry_run,
             no_push=no_push,
             followup_used=True,
+            resume_agent_id=agent.agent_id,
         )
 
     if plan_path:
@@ -1943,10 +2513,20 @@ def process_ticket(
             refs=[ticket_ref],
             no_push=no_push,
             dry_run=dry_run,
+            ticket_type=ticket_type,
+            title=ticket_title,
+            tracker_id=tracker_id,
+            plan_path=plan_path,
+            kind="ticket",
         )
         unit.pr_url = pr_url
-    report.add(unit)
-    log_cumulative_tokens(report)
+    _finish_ticket_unit(
+        project_root=project_root,
+        report=report,
+        unit=unit,
+        tracker_id=tracker_id,
+        shutdown=SHUTDOWN_COMPLETED,
+    )
 
     if epic and epic_fully_done(project_root, str(epic)):
         log.info("epic fully done epic=%s", epic)
@@ -2004,6 +2584,8 @@ def run_retrospective(
         refs=[f"retrospective:{epic}"],
         no_push=no_push,
         dry_run=dry_run,
+        title="retrospective",
+        kind="retrospective",
     )
     unit.pr_url = pr_url
     report.add(unit)
