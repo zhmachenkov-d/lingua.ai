@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -19,7 +20,10 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
+from app.router.session_mirror import upsert_session_mirror
 from app.schemas.ws import ErrorCode
+
+logger = logging.getLogger(__name__)
 
 # Fixed RU template — never copy adapter completion text into message.
 CTA_MESSAGE: Final = (
@@ -151,10 +155,21 @@ async def write_turn_snapshot(
             assert isinstance(values, dict)
             return values
 
-        return await asyncio.wait_for(
+        values = await asyncio.wait_for(
             _persist(),
             timeout=CHECKPOINTER_WRITE_TIMEOUT_SECONDS,
         )
+
+    # Best-effort non-SoT Session mirror; never fail the turn / snapshot.
+    try:
+        await asyncio.wait_for(
+            upsert_session_mirror(database_url=database_url),
+            timeout=CHECKPOINTER_WRITE_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        logger.exception("session mirror upsert failed after successful snapshot")
+
+    return values
 
 
 async def get_turn_snapshot(

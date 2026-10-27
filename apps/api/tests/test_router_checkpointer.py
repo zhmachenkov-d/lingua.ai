@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import psycopg
 import pytest
 from app.db.bootstrap import bootstrap
 from app.db.checkpointer import open_checkpointer
@@ -191,6 +193,39 @@ def test_handle_turn_blank_after_nonblank_wipes_last_user_text(
     assert snap["active_agent"] is None
 
 
+def _session_mirror_rows(database_url: str) -> list[tuple[object, ...]]:
+    with psycopg.connect(database_url) as conn:
+        return list(
+            conn.execute(
+                "SELECT id, learner_id, active_agent, updated_at FROM session "
+                "WHERE learner_id = %s ORDER BY started_at",
+                (str(MVP_LEARNER_ID),),
+            ).fetchall()
+        )
+
+
+@pytest.mark.integration_db
+def test_successful_snapshot_upserts_session_mirror(migrated_url: str) -> None:
+    asyncio.run(
+        write_turn_snapshot(last_user_text="mirror-1", database_url=migrated_url)
+    )
+    rows = _session_mirror_rows(migrated_url)
+    assert len(rows) == 1
+    assert str(rows[0][1]) == str(MVP_LEARNER_ID)
+    assert rows[0][2] == "Router"
+    first_updated = rows[0][3]
+    assert isinstance(first_updated, datetime)
+
+    asyncio.run(
+        write_turn_snapshot(last_user_text="mirror-2", database_url=migrated_url)
+    )
+    rows_after = _session_mirror_rows(migrated_url)
+    assert len(rows_after) == 1
+    assert rows_after[0][0] == rows[0][0]
+    assert rows_after[0][2] == "Router"
+    assert rows_after[0][3] > first_updated
+
+
 def test_handle_turn_llm_error_skips_snapshot() -> None:
     from app.llm.adapter import LlmUnavailable
 
@@ -247,3 +282,53 @@ def test_handle_turn_maps_snapshot_timeout_to_checkpointer_write_failed() -> Non
     assert isinstance(result, TurnError)
     assert result.code == "checkpointer_write_failed"
     assert result.turn_id == "to"
+
+
+def _ok_checkpointer_open():
+    """Async context manager yielding a saver that completes ``aput``."""
+
+    saver = MagicMock()
+    saver.aget = AsyncMock(return_value=None)
+    saver.aput = AsyncMock(return_value=None)
+    saver.get_next_version = MagicMock(
+        return_value="00000000000000000000000000000001.0.0"
+    )
+
+    @asynccontextmanager
+    async def fake_open(_database_url: str | None = None):
+        yield saver
+
+    return fake_open, saver
+
+
+def test_write_turn_snapshot_succeeds_when_mirror_fails() -> None:
+    fake_open, saver = _ok_checkpointer_open()
+    with (
+        patch("app.router.turn.open_checkpointer", fake_open),
+        patch(
+            "app.router.turn.upsert_session_mirror",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("mirror down"),
+        ) as mirror,
+    ):
+        written = asyncio.run(write_turn_snapshot(last_user_text="still ok"))
+    mirror.assert_awaited_once()
+    saver.aput.assert_awaited_once()
+    assert written["last_user_text"] == "still ok"
+    assert written["active_agent"] is None
+
+
+def test_handle_turn_succeeds_when_mirror_fails() -> None:
+    fake_open, saver = _ok_checkpointer_open()
+    with (
+        patch("app.router.turn.open_checkpointer", fake_open),
+        patch(
+            "app.router.turn.upsert_session_mirror",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("mirror down"),
+        ),
+    ):
+        result = asyncio.run(handle_turn("  \t ", turn_id="m1"))
+    assert isinstance(result, TurnSuccess)
+    assert result.turn_id == "m1"
+    saver.aput.assert_awaited_once()
