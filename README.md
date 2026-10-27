@@ -53,8 +53,8 @@ docker volume rm "$DB_VOL" 2>/dev/null || echo "No $DB_VOL volume (already clean
 "${dc[@]}" up --build
 # host-network builds often need: DOCKER_BUILDKIT=0 "${dc[@]}" up --build
 
-# 4) Confirm api is healthy after bootstrap
-curl -s http://127.0.0.1:8000/health   # expect: {"status":"ok"}
+# 4) Confirm api is ready after bootstrap (DB probe)
+curl -s http://127.0.0.1:8000/ready   # expect: {"status":"ok"}
 ```
 
 After wipe: re-set CEFR via `PUT /profile/cefr` (see **LearnerProfile CEFR** below for URL, body shape, and `curl` examples) before any Ready Tutor gate; re-run ingest when that pipeline exists (stub today — see Ingest job stub). Ready Tutor requires re-ingest + CEFR re-set once those features land. When Tutor gating exists, overall CEFR must be set first (empty/missing `overall` blocks Ready Tutor — FR-7).
@@ -91,8 +91,9 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 | Service                              | URL                              |
 | ------------------------------------ | -------------------------------- |
 | Web (Angular chat shell via nginx)   | http://127.0.0.1:4200/           |
-| API health (direct)                  | http://127.0.0.1:8000/health     |
-| API health via web proxy             | http://127.0.0.1:4200/api/health |
+| API liveness (direct)                | http://127.0.0.1:8000/health     |
+| API readiness (DB probe)             | http://127.0.0.1:8000/ready      |
+| API readiness via web proxy          | http://127.0.0.1:4200/api/ready  |
 | API learner WebSocket (Router turns) | ws://127.0.0.1:8000/ws           |
 
 Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). There is **no** nginx `/ws` proxy — the chat client opens `ws://{hostname}:8000/ws` directly (same host as the page, port 8000). The `web-dev` profile (`ng serve`) likewise has no `/api/` proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
@@ -117,7 +118,7 @@ On startup the `api` prepares the shared Postgres itself — no separate migrati
 3. `AsyncPostgresSaver.setup()` — LangGraph checkpointer tables (library-owned; never in Alembic; same **120 s** loud-fail bound; lock held through drain)
 4. release the lock — after both steps have returned (or after the timed-out step’s worker finishes when step 2 fails the bound and step 3 never starts). A work timeout fails startup loudly without abandoning in-flight work; a hung worker pins the lock until the process or session dies
 
-Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` → `200 {"status":"ok"}` is reachable only after steps 2 and 3 both succeed.** If DB config is missing (no explicit `DATABASE_URL` and incomplete `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST`), Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
+Uvicorn binds the port only after lifespan startup succeeds, so **`GET /health` (liveness) and `GET /ready` (readiness) are reachable only after steps 2 and 3 both succeed.** `/health` stays `200 {"status":"ok"}` while the process is up; `/ready` runs a cheap DB probe and returns `503` if Postgres is unreachable after bootstrap (Compose api healthchecks use `/ready`). If DB config is missing (no explicit `DATABASE_URL` and incomplete `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST`), Postgres is unreachable, the lock wait times out, migrate/setup exceeds its bound, or either step fails, the process exits non-zero with a clear error and never serves. A restart re-runs the whole sequence (both steps are idempotent), which also recovers a half-finished bootstrap (e.g. migrated but checkpointer missing).
 
 **Single-writer MVP:** one `api` replica is the migrator. The advisory lock serializes concurrent starts (the second waits, then re-runs the idempotent sequence), but multi-replica migration orchestration is out of scope. Alembic downgrade is out of scope.
 
@@ -146,7 +147,7 @@ curl -s -X PUT http://127.0.0.1:8000/profile/cefr \
 curl -s http://127.0.0.1:8000/profile/cefr
 ```
 
-Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` (lifespan + mocked bootstrap), mocked WebSocket/LLM turn tests, and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
+Tests (via **uv**, not pip): `cd apps/api && uv sync --extra dev && DATABASE_URL=postgresql://… uv run pytest -m integration_db` (needs the Compose `db`; each test uses a throwaway database on that server). Without a reachable `DATABASE_URL`, `integration_db` tests are **skipped** locally (the skip reason says they are not verified); under `CI=true` a missing/unreachable DB **fails** the run. Plain `uv run pytest` still runs `/health` and `/ready` (lifespan + mocked bootstrap; readiness DB probe mocked), mocked WebSocket/LLM turn tests, and the no-DB contract tests (missing URL, Session wording, Alembic≠checkpointer metadata).
 
 ### Learner WebSocket turns (Router skeleton)
 
@@ -217,7 +218,7 @@ docker compose --profile ingest run --rm ingest
 compose.yaml       # default bridge topology (service DNS + ports)
 compose.dev.yaml   # nested-Docker host-network alternative
 apps/
-  api/      # FastAPI + /health + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
+  api/      # FastAPI + /health + /ready + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
   web/      # Angular 22.2.x chat shell + Soft Sage tokens (T0–T1; + nginx.dev.conf for host stack)
   ingest/   # job-profile stub
 ```
