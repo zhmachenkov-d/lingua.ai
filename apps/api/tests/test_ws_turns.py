@@ -367,3 +367,214 @@ def test_disconnect_mid_turn_cancels_without_snapshot(client: TestClient) -> Non
         release.set()
         time.sleep(0.05)
     write.assert_not_awaited()
+
+
+def test_abnormal_cleanup_releases_only_after_inflight_settled() -> None:
+    """finally-equivalent cleanup must not clear occupancy while in_flight runs."""
+
+    async def run() -> None:
+        ws_mod.reset_ws_gate_for_tests()
+        assert await ws_mod._try_claim_ws()
+
+        started = asyncio.Event()
+        hold = asyncio.Event()
+
+        async def slow_turn(
+            *_a: object, turn_id: str | None = None, **_k: object
+        ) -> TurnSuccess:
+            started.set()
+            await hold.wait()
+            return _cta_success(turn_id=turn_id)
+
+        in_flight = asyncio.create_task(slow_turn("hi", turn_id="t-abn"))
+        await started.wait()
+
+        release_while_unfinished = False
+        real_release = ws_mod._release_ws
+
+        async def tracked_release() -> None:
+            nonlocal release_while_unfinished
+            if not in_flight.done():
+                release_while_unfinished = True
+            await real_release()
+
+        with patch.object(ws_mod, "_release_ws", tracked_release):
+            await ws_mod._drain_inflight(in_flight, reason="abnormal")
+            await ws_mod._release_ws()
+
+        assert in_flight.done()
+        assert release_while_unfinished is False
+        # Gate free only after drain+release — a new claim succeeds.
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())
+
+
+def test_second_claim_blocked_until_abnormal_drain_finishes() -> None:
+    """Second /ws claim stays rejected until canceled in-flight turn settles."""
+
+    async def run() -> None:
+        ws_mod.reset_ws_gate_for_tests()
+        assert await ws_mod._try_claim_ws()
+
+        started = asyncio.Event()
+
+        async def sticky_turn(
+            *_a: object, turn_id: str | None = None, **_k: object
+        ) -> TurnSuccess:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)
+                raise
+            return _cta_success(turn_id=turn_id)
+
+        in_flight = asyncio.create_task(sticky_turn("hi", turn_id="t-hold"))
+        await started.wait()
+
+        cleanup = asyncio.create_task(
+            _abnormal_cleanup_then_release(in_flight),
+        )
+        # While drain awaits the sticky cancel path, occupancy must stay held.
+        await asyncio.sleep(0)
+        assert not await ws_mod._try_claim_ws()
+        await cleanup
+        assert in_flight.done()
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())
+
+
+async def _abnormal_cleanup_then_release(
+    in_flight: asyncio.Task[TurnSuccess | TurnError],
+) -> None:
+    await ws_mod._drain_inflight(in_flight, reason="abnormal")
+    await ws_mod._release_ws()
+
+
+def test_drain_noop_when_inflight_unset_still_allows_release() -> None:
+    async def run() -> None:
+        ws_mod.reset_ws_gate_for_tests()
+        assert await ws_mod._try_claim_ws()
+        await ws_mod._drain_inflight(None, reason="abnormal")
+        await ws_mod._release_ws()
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())
+
+
+def test_outer_cancel_mid_drain_still_awaits_inflight() -> None:
+    """Handler cancel during drain must not release until in_flight is done."""
+
+    async def run() -> None:
+        ws_mod.reset_ws_gate_for_tests()
+        assert await ws_mod._try_claim_ws()
+
+        started = asyncio.Event()
+
+        async def sticky_turn(
+            *_a: object, turn_id: str | None = None, **_k: object
+        ) -> TurnSuccess:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.08)
+                raise
+            return _cta_success(turn_id=turn_id)
+
+        in_flight = asyncio.create_task(sticky_turn("hi", turn_id="t-mid"))
+        await started.wait()
+
+        release_while_unfinished = False
+        real_release = ws_mod._release_ws
+
+        async def tracked_release() -> None:
+            nonlocal release_while_unfinished
+            if not in_flight.done():
+                release_while_unfinished = True
+            await real_release()
+
+        async def cleanup() -> None:
+            with patch.object(ws_mod, "_release_ws", tracked_release):
+                await ws_mod._drain_inflight(in_flight, reason="abnormal")
+                await ws_mod._release_ws()
+
+        cleanup_task = asyncio.create_task(cleanup())
+        await asyncio.sleep(0)
+        cleanup_task.cancel()
+        # Drain swallows CancelledError so release can run; task may finish normally.
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
+        assert in_flight.done()
+        assert release_while_unfinished is False
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())
+
+
+def test_learner_ws_cancel_drains_before_release() -> None:
+    """Cancel of learner_ws with a live turn drains in_flight before the gate opens."""
+
+    async def run() -> None:
+        import json
+
+        from starlette.websockets import WebSocketState
+
+        ws_mod.reset_ws_gate_for_tests()
+        started = asyncio.Event()
+        receive_n = 0
+
+        async def sticky_turn(
+            *_a: object, turn_id: str | None = None, **_k: object
+        ) -> TurnSuccess:
+            started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0.05)
+                raise
+            return _cta_success(turn_id=turn_id)
+
+        async def fake_receive() -> dict[str, object]:
+            nonlocal receive_n
+            receive_n += 1
+            if receive_n == 1:
+                return {
+                    "type": "websocket.receive",
+                    "text": json.dumps(
+                        {
+                            "kind": "turn_request",
+                            "text": "hello",
+                            "turn_id": "t-h",
+                        }
+                    ),
+                }
+            await asyncio.Event().wait()
+            return {"type": "websocket.disconnect"}
+
+        fake_ws = AsyncMock()
+        fake_ws.accept = AsyncMock()
+        fake_ws.receive = fake_receive
+        fake_ws.send_json = AsyncMock()
+        fake_ws.close = AsyncMock()
+        fake_ws.client_state = WebSocketState.CONNECTED
+        fake_ws.application_state = WebSocketState.CONNECTED
+
+        with patch("app.api.routes.ws.handle_turn", side_effect=sticky_turn):
+            handler = asyncio.create_task(ws_mod.learner_ws(fake_ws))
+            for _ in range(100):
+                if started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert started.is_set()
+            assert not await ws_mod._try_claim_ws()
+            handler.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await handler
+        assert await ws_mod._try_claim_ws()
+
+    asyncio.run(run())

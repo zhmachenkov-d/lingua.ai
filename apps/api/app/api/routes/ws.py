@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import logging
+from typing import Any, Literal
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -14,10 +15,13 @@ from app.router.turn import ERROR_MESSAGES, TurnError, TurnSuccess, handle_turn
 from app.schemas.ws import ErrorEvent, TurnCompleteEvent, TurnRequest
 
 router = APIRouter(tags=["ws"])
+logger = logging.getLogger(__name__)
 
 # At most one active /ws for the MVP learner (C2).
 _ws_lock = asyncio.Lock()
 _ws_occupied = False
+
+CleanupReason = Literal["disconnect", "abnormal"]
 
 
 async def _try_claim_ws() -> bool:
@@ -33,6 +37,41 @@ async def _release_ws() -> None:
     global _ws_occupied
     async with _ws_lock:
         _ws_occupied = False
+
+
+async def _drain_inflight(
+    task: asyncio.Task[TurnSuccess | TurnError] | None,
+    *,
+    reason: CleanupReason,
+) -> None:
+    """Cancel and await in-flight turn before occupancy release.
+
+    Joins until ``task`` is done even if the caller is cancelled mid-await
+    (``asyncio.shield`` + re-await loop, same idea as bootstrap ``_drain``).
+    Does not re-raise ``CancelledError`` so the caller's ``finally`` can still
+    ``_release_ws``. On non-cancel await failure, logs and returns so occupancy
+    is not stuck forever.
+    """
+    if task is None:
+        return
+    if not task.done():
+        if reason == "abnormal":
+            logger.info(
+                "ws abnormal exit: canceling in-flight turn before occupancy release"
+            )
+        task.cancel()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Outer cancel or cancelled task result — keep joining until done.
+            continue
+        except Exception:
+            logger.exception(
+                "ws in-flight drain failed before occupancy release reason=%s",
+                reason,
+            )
+            break
 
 
 # Application close range 4000–4999; 4009 mirrors the historical HTTP 409 Conflict.
@@ -144,9 +183,11 @@ async def learner_ws(websocket: WebSocket) -> None:
         return
 
     # Claim held until finally — even if accept() or early setup fails.
+    # Disconnect paths return/pass; finally is the single cancel+await+release path.
     in_flight: asyncio.Task[TurnSuccess | TurnError] | None = None
     in_flight_turn_id: str | None = None
     receive_task: asyncio.Task[Any] | None = None
+    cleanup_reason: CleanupReason = "abnormal"
     try:
         await websocket.accept()
         receive_task = asyncio.create_task(websocket.receive())
@@ -177,14 +218,7 @@ async def learner_ws(websocket: WebSocket) -> None:
             receive_task = asyncio.create_task(websocket.receive())
 
             if message["type"] == "websocket.disconnect":
-                if in_flight is not None:
-                    in_flight.cancel()
-                    try:
-                        await in_flight
-                    except asyncio.CancelledError:
-                        pass
-                    in_flight = None
-                    in_flight_turn_id = None
+                cleanup_reason = "disconnect"
                 return
 
             if message["type"] != "websocket.receive":
@@ -217,12 +251,7 @@ async def learner_ws(websocket: WebSocket) -> None:
             in_flight_turn_id = turn_id
             in_flight = asyncio.create_task(handle_turn(text, turn_id=turn_id))
     except WebSocketDisconnect:
-        if in_flight is not None:
-            in_flight.cancel()
-            try:
-                await in_flight
-            except asyncio.CancelledError:
-                pass
+        cleanup_reason = "disconnect"
     finally:
         if receive_task is not None and not receive_task.done():
             receive_task.cancel()
@@ -238,6 +267,8 @@ async def learner_ws(websocket: WebSocket) -> None:
                 await websocket.close()
             except RuntimeError:
                 pass
+        # Drain before release on every exit (disconnect and abnormal alike).
+        await _drain_inflight(in_flight, reason=cleanup_reason)
         await _release_ws()
 
 
