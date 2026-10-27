@@ -16,9 +16,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
+import re
 import subprocess
 import sys
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +33,9 @@ from typing import Any
 import yaml
 
 TICKETS_SCRIPT = Path("_bmad/method/scripts/tickets.py")
+STORE_PROJECT_FILE = Path("_bmad/custom/ticketing-store-config.toml")
+STORE_STARTERS = Path(".agents/skills/bmad-agent-po/config")
+STORE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PROTECTED_BRANCHES = frozenset({"main", "master"})
 SHUTDOWN_COMPLETED = "completed"
 SHUTDOWN_BLOCKED = "blocked"
@@ -34,6 +44,22 @@ SHUTDOWN_DONE_CHECKPOINT = "done_checkpoint"
 SHUTDOWN_DIRTY_TREE = "dirty_tree"
 SHUTDOWN_ERROR = "error"
 SHUTDOWN_TICKET_NOT_RESOLVED = "ticket_not_resolved"
+SHUTDOWN_UNREFINED_BUGS = "unrefined_bugs"
+
+log = logging.getLogger("bmad_orchestrate")
+
+
+def configure_logging(level: str) -> None:
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)-5s %(message)s", "%Y-%m-%d %H:%M:%S"
+        )
+    )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.addHandler(handler)
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
 
 # --------------------------------------------------------------------------- report
@@ -74,6 +100,7 @@ class RunReport:
     shutdown: str = SHUTDOWN_COMPLETED
     shutdown_detail: str | None = None
     totals: dict[str, Any] = field(default_factory=dict)
+    unrefined_bugs: list[dict[str, str]] = field(default_factory=list)
 
     def add(self, unit: UnitReport) -> None:
         self.units.append(unit)
@@ -122,6 +149,7 @@ class RunReport:
             "shutdown": self.shutdown,
             "shutdown_detail": self.shutdown_detail,
             "units": [asdict(u) for u in self.units],
+            "unrefined_bugs": list(self.unrefined_bugs),
             "totals": self.totals,
         }
 
@@ -148,6 +176,14 @@ class RunReport:
                 f"  {u.ref:<40} {u.outcome:<12} tokens={tok}  deferred={u.deferred_count}{extra}",
                 file=stream,
             )
+        print("Unrefined bugs:", file=stream)
+        if not self.unrefined_bugs:
+            print("  none", file=stream)
+        else:
+            for bug in self.unrefined_bugs:
+                title = bug.get("title") or ""
+                suffix = f"  {title}" if title else ""
+                print(f"  {bug.get('ref', '?')}{suffix}", file=stream)
         print("Retrospectives:", file=stream)
         if not retros:
             print("  none", file=stream)
@@ -161,9 +197,32 @@ class RunReport:
         print(
             f"Totals: tickets={t['tickets']}  done={t['marked_done']}  "
             f"tokens={tok['total_tokens']}  (in={tok['input_tokens']} out={tok['output_tokens']})  "
-            f"deferred={t['deferred_items']}  retros={t['retrospectives']}  prs={t['prs']}",
+            f"deferred={t['deferred_items']}  retros={t['retrospectives']}  prs={t['prs']}  "
+            f"unrefined_bugs={len(self.unrefined_bugs)}",
             file=stream,
         )
+
+
+def format_token_cost(usage: TokenUsage | None) -> str:
+    if usage is None:
+        return "tokens=null"
+    return (
+        f"tokens in={usage.input_tokens} out={usage.output_tokens} "
+        f"total={usage.total_tokens}"
+    )
+
+
+def format_token_cost_from_report(report: RunReport) -> str:
+    report.finalize_totals()
+    tok = report.totals.get("tokens") or {}
+    return (
+        f"tokens in={tok.get('input_tokens', 0)} out={tok.get('output_tokens', 0)} "
+        f"total={tok.get('total_tokens', 0)}"
+    )
+
+
+def log_cumulative_tokens(report: RunReport) -> None:
+    log.info("token cost cumulative %s", format_token_cost_from_report(report))
 
 
 class OrchestratorHalt(Exception):
@@ -187,9 +246,11 @@ def _tickets_bin(project_root: Path) -> list[str]:
 
 def tickets_cmd(project_root: Path, *args: str) -> dict[str, Any]:
     cmd = [*_tickets_bin(project_root), *args]
+    log.debug("tickets cmd: %s", " ".join(cmd))
     proc = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True)
     raw_out = (proc.stdout or "").strip()
     raw_err = (proc.stderr or "").strip()
+    log.debug("tickets returncode=%s", proc.returncode)
     payload: dict[str, Any] | None = None
     for blob in (raw_out, raw_err):
         if not blob:
@@ -240,18 +301,68 @@ def tickets_status(project_root: Path, folder: str | None = None) -> dict[str, A
     return tickets_cmd(project_root, *args)
 
 
+def tickets_mirror(
+    project_root: Path,
+    items: list[dict[str, Any]],
+    folder: str | None = None,
+) -> dict[str, Any]:
+    args = ["mirror"]
+    if folder:
+        args.append(folder)
+    cmd = [*_tickets_bin(project_root), *args]
+    log.info("tickets mirror folder=%s items=%s", folder, len(items))
+    proc = subprocess.run(
+        cmd,
+        cwd=project_root,
+        input=json.dumps(items),
+        capture_output=True,
+        text=True,
+    )
+    raw_out = (proc.stdout or "").strip()
+    raw_err = (proc.stderr or "").strip()
+    payload: dict[str, Any] | None = None
+    for blob in (raw_out, raw_err):
+        if not blob:
+            continue
+        try:
+            payload = json.loads(blob)
+            break
+        except json.JSONDecodeError:
+            continue
+    if proc.returncode != 0:
+        err = None
+        if isinstance(payload, dict):
+            err = payload.get("error")
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR,
+            err or raw_err or raw_out or f"tickets.py mirror exited {proc.returncode}",
+        )
+    if not isinstance(payload, dict):
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"tickets.py mirror returned non-JSON: {raw_out[:200]}"
+        )
+    return payload
+
+
 def tickets_mark_done(
-    project_root: Path, ref: str, plan_path: Path | None, folder: str | None = None
+    project_root: Path,
+    ref: str,
+    plan_path: Path | None,
+    *,
+    tracker_id: str | None = None,
+    folder: str | None = None,
 ) -> None:
-    """Mark plan status done. Falls back to editing the plan when store refuses mark."""
+    """Mark ticket done via tickets.py mark, or tracker write + mirror on store refusal."""
     args = ["mark"]
     if folder:
         args.extend([folder, ref, "done"])
     else:
         args.extend([ref, "done"])
     cmd = [*_tickets_bin(project_root), *args]
+    log.info("mark done via tickets.py ref=%s", ref)
     proc = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True)
     if proc.returncode == 0:
+        log.info("mark done succeeded via tickets.py ref=%s", ref)
         return
     err_blob = (proc.stderr or proc.stdout or "").strip()
     err_msg = err_blob
@@ -259,15 +370,393 @@ def tickets_mark_done(
         err_msg = json.loads(err_blob).get("error", err_blob)
     except json.JSONDecodeError:
         pass
-    # GitHub (and other tracker) stores refuse mark; edit plan frontmatter like build-auto HALT fallback.
     if (
         plan_path
         and plan_path.is_file()
         and "change status through the store" in str(err_msg)
     ):
-        set_plan_status(plan_path, "done")
+        log.info("mark refused by store; dispatching tracker write ref=%s", ref)
+        tracker_mark_done(
+            project_root,
+            ref=ref,
+            tracker_id=tracker_id,
+            plan_path=plan_path,
+            folder=folder,
+        )
         return
     raise OrchestratorHalt(SHUTDOWN_ERROR, f"mark done failed: {err_msg}")
+
+
+# --------------------------------------------------------------------------- store config / tracker mark-done
+
+
+def _merge_toml(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_toml(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_store_config(project_root: Path) -> dict[str, Any]:
+    path = project_root / STORE_PROJECT_FILE
+    project = (
+        tomllib.loads(path.read_text(encoding="utf-8-sig")) if path.is_file() else {}
+    )
+    tickets = project.get("tickets")
+    store = tickets.get("store") if isinstance(tickets, dict) else None
+    if not isinstance(store, str) or not store:
+        store = "repo"
+    starter = project_root / STORE_STARTERS / f"{store}-ticketing.toml"
+    if STORE_NAME_RE.match(store) and starter.is_file():
+        config = _merge_toml(
+            tomllib.loads(starter.read_text(encoding="utf-8-sig")), project
+        )
+    else:
+        config = project
+    if isinstance(config.get("tickets"), dict):
+        config["tickets"]["store"] = store
+    return config
+
+
+def _tickets_table(cfg: dict[str, Any]) -> dict[str, Any]:
+    tickets = cfg.get("tickets")
+    return tickets if isinstance(tickets, dict) else {}
+
+
+def _status_map(cfg: dict[str, Any]) -> dict[str, str]:
+    status = _tickets_table(cfg).get("status")
+    if not isinstance(status, dict):
+        return {}
+    return {str(k): str(v) for k, v in status.items() if v is not None}
+
+
+def _require_env(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"{name} is not set")
+    return value
+
+
+def _http_json(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    body: dict[str, Any] | None = None,
+) -> Any:
+    data = None if body is None else json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method)
+    req.add_header("Accept", "application/json")
+    if body is not None:
+        req.add_header("Content-Type", "application/json")
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as err:
+        detail = err.read().decode("utf-8", errors="replace")
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"HTTP {err.code} {method} {url}: {detail[:500]}"
+        ) from err
+    except urllib.error.URLError as err:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"HTTP {method} {url}: {err}") from err
+    if not raw.strip():
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as err:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"non-JSON response from {url}: {raw[:200]}"
+        ) from err
+
+
+def _run_checked(
+    cmd: list[str], *, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    log.debug("run: %s", " ".join(cmd))
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR,
+            proc.stderr.strip() or proc.stdout.strip() or f"{' '.join(cmd)} failed",
+        )
+    return proc
+
+
+def tracker_done_github(
+    project_root: Path, *, tracker_id: str, cfg: dict[str, Any]
+) -> None:
+    tickets = _tickets_table(cfg)
+    repo = str(tickets.get("repo") or "").strip()
+    status_labels = {
+        v
+        for k, v in _status_map(cfg).items()
+        if k in ("backlog", "in-progress", "review") and v
+    }
+    base = ["gh", "issue"]
+    r_args = ["-R", repo] if repo else []
+    view = _run_checked(
+        [*base, "view", tracker_id, *r_args, "--json", "labels"], cwd=project_root
+    )
+    try:
+        labels = {
+            str(item.get("name") or "")
+            for item in (json.loads(view.stdout).get("labels") or [])
+        }
+    except json.JSONDecodeError as err:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"gh issue view non-JSON: {view.stdout[:200]}"
+        ) from err
+    for label in sorted(labels & status_labels):
+        log.info("github remove status label=%s issue=%s", label, tracker_id)
+        edit = subprocess.run(
+            [*base, "edit", tracker_id, *r_args, "--remove-label", label],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+        )
+        if edit.returncode != 0:
+            log.warning(
+                "github remove-label %s failed (ignored): %s",
+                label,
+                (edit.stderr or edit.stdout or "").strip(),
+            )
+    log.info("github close issue=%s repo=%s", tracker_id, repo or "(default)")
+    _run_checked([*base, "close", tracker_id, *r_args], cwd=project_root)
+
+
+def tracker_done_jira(
+    project_root: Path, *, tracker_id: str, cfg: dict[str, Any]
+) -> None:
+    done_status = _status_map(cfg).get("done") or "Done"
+    log.info("jira transition key=%s status=%s", tracker_id, done_status)
+    _run_checked(
+        [
+            "acli",
+            "jira",
+            "workitem",
+            "transition",
+            tracker_id,
+            "--status",
+            done_status,
+        ],
+        cwd=project_root,
+    )
+
+
+def tracker_done_linear(
+    project_root: Path, *, tracker_id: str, cfg: dict[str, Any]
+) -> None:
+    del project_root  # HTTP API; cwd unused
+    api_key = _require_env("LINEAR_API_KEY")
+    done_name = _status_map(cfg).get("done") or "Done"
+    headers = {"Authorization": api_key}
+
+    issue_payload = _http_json(
+        "POST",
+        "https://api.linear.app/graphql",
+        headers=headers,
+        body={
+            "query": ("query($id: String!) { issue(id: $id) { id team { id } } }"),
+            "variables": {"id": tracker_id},
+        },
+    )
+    issue = ((issue_payload or {}).get("data") or {}).get("issue")
+    if not issue:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"linear issue not found: {tracker_id}")
+    team_id = (issue.get("team") or {}).get("id")
+    if not team_id:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"linear issue {tracker_id} has no team")
+
+    states_payload = _http_json(
+        "POST",
+        "https://api.linear.app/graphql",
+        headers=headers,
+        body={
+            "query": (
+                "query($teamId: String!) {"
+                "  team(id: $teamId) { states { nodes { id name } } }"
+                "}"
+            ),
+            "variables": {"teamId": team_id},
+        },
+    )
+    nodes = (
+        (((states_payload or {}).get("data") or {}).get("team") or {}).get("states")
+        or {}
+    ).get("nodes") or []
+    state_id = next(
+        (
+            str(n["id"])
+            for n in nodes
+            if str(n.get("name") or "").lower() == done_name.lower()
+        ),
+        None,
+    )
+    if not state_id:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR,
+            f"linear status {done_name!r} not found for team of {tracker_id}",
+        )
+
+    log.info("linear issueUpdate id=%s state=%s", tracker_id, done_name)
+    update = _http_json(
+        "POST",
+        "https://api.linear.app/graphql",
+        headers=headers,
+        body={
+            "query": (
+                "mutation($id: String!, $stateId: String!) {"
+                "  issueUpdate(id: $id, input: { stateId: $stateId }) {"
+                "    success"
+                "  }"
+                "}"
+            ),
+            "variables": {"id": issue["id"], "stateId": state_id},
+        },
+    )
+    success = (((update or {}).get("data") or {}).get("issueUpdate") or {}).get(
+        "success"
+    )
+    if not success:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"linear issueUpdate failed: {update}")
+
+
+def _notion_page_id(tracker_id: str) -> str:
+    """Notion page ids may be dashed or undashed UUIDs, or already a URL fragment."""
+    tid = tracker_id.strip()
+    if "notion.so" in tid or "www.notion.so" in tid:
+        fragment = tid.rstrip("/").split("/")[-1].split("?")[0]
+        tid = fragment.split("-")[-1] if "-" in fragment else fragment
+    hex_only = re.sub(r"[^0-9a-fA-F]", "", tid)
+    if len(hex_only) == 32:
+        return (
+            f"{hex_only[0:8]}-{hex_only[8:12]}-{hex_only[12:16]}-"
+            f"{hex_only[16:20]}-{hex_only[20:32]}"
+        )
+    return tid
+
+
+def tracker_done_notion(
+    project_root: Path, *, tracker_id: str, cfg: dict[str, Any]
+) -> None:
+    del project_root
+    token = _require_env("NOTION_TOKEN")
+    done_name = _status_map(cfg).get("done") or "Done"
+    page_id = _notion_page_id(tracker_id)
+    log.info("notion update page=%s status=%s", page_id, done_name)
+    _http_json(
+        "PATCH",
+        f"https://api.notion.com/v1/pages/{page_id}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Notion-Version": "2022-06-28",
+        },
+        body={"properties": {"Status": {"status": {"name": done_name}}}},
+    )
+
+
+def _trello_board_id(board: str) -> str:
+    board = board.strip()
+    if not board:
+        raise OrchestratorHalt(SHUTDOWN_ERROR, "trello board is not configured")
+    if re.fullmatch(r"[a-f0-9]{24}", board):
+        return board
+    # URL like https://trello.com/b/<short>/<name>
+    parts = board.rstrip("/").split("/")
+    if "b" in parts:
+        idx = parts.index("b")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+    return board
+
+
+def tracker_done_trello(
+    project_root: Path, *, tracker_id: str, cfg: dict[str, Any]
+) -> None:
+    del project_root
+    key = _require_env("TRELLO_API_KEY")
+    token = _require_env("TRELLO_TOKEN")
+    done_name = _status_map(cfg).get("done") or "Done"
+    board = str(_tickets_table(cfg).get("board") or "").strip()
+    board_id = _trello_board_id(board)
+    auth = {"key": key, "token": token}
+
+    lists_url = (
+        f"https://api.trello.com/1/boards/{urllib.parse.quote(board_id)}/lists?"
+        + urllib.parse.urlencode(auth)
+    )
+    lists = _http_json("GET", lists_url)
+    if not isinstance(lists, list):
+        raise OrchestratorHalt(SHUTDOWN_ERROR, f"trello lists failed: {lists}")
+    list_id = next(
+        (
+            str(item["id"])
+            for item in lists
+            if str(item.get("name") or "").lower() == done_name.lower()
+        ),
+        None,
+    )
+    if not list_id:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR, f"trello list {done_name!r} not found on board {board_id}"
+        )
+
+    card_url = (
+        f"https://api.trello.com/1/cards/{urllib.parse.quote(tracker_id)}?"
+        + urllib.parse.urlencode({**auth, "idList": list_id})
+    )
+    log.info("trello move card=%s list=%s", tracker_id, done_name)
+    _http_json("PUT", card_url)
+
+
+TrackerDoneFn = Callable[..., None]
+
+TRACKER_DONE: dict[str, TrackerDoneFn] = {
+    "github": tracker_done_github,
+    "jira": tracker_done_jira,
+    "linear": tracker_done_linear,
+    "notion": tracker_done_notion,
+    "trello": tracker_done_trello,
+}
+
+
+def tracker_mark_done(
+    project_root: Path,
+    *,
+    ref: str,
+    tracker_id: str | None,
+    plan_path: Path,
+    folder: str | None = None,
+) -> None:
+    cfg = load_store_config(project_root)
+    store = str(_tickets_table(cfg).get("store") or "repo")
+    tid = (tracker_id or "").strip()
+    if not tid:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR,
+            f"store is {store}: cannot mark done without tracker_id for {ref}",
+        )
+    handler = TRACKER_DONE.get(store)
+    if handler is None:
+        raise OrchestratorHalt(
+            SHUTDOWN_ERROR,
+            f"no mark-done handler for store {store!r}; supported: "
+            + ", ".join(sorted(TRACKER_DONE)),
+        )
+    log.info("tracker mark-done store=%s ref=%s tracker_id=%s", store, ref, tid)
+    handler(project_root, tracker_id=tid, cfg=cfg)
+    tickets_mirror(
+        project_root,
+        [{"ref": ref, "tracker_id": tid, "tracker_status": "done"}],
+        folder=folder,
+    )
+    log.info("set plan status done path=%s", plan_path)
+    set_plan_status(plan_path, "done")
 
 
 # --------------------------------------------------------------------------- plan / deferred IO
@@ -383,6 +872,7 @@ def run_git(
 
 
 def require_clean_tree(project_root: Path) -> None:
+    log.info("checking clean working tree")
     proc = run_git(project_root, "status", "--porcelain")
     if proc.stdout.strip():
         raise OrchestratorHalt(SHUTDOWN_DIRTY_TREE, "working tree is not clean")
@@ -410,12 +900,14 @@ def ensure_push_and_pr(
     dry_run: bool,
 ) -> str | None:
     if dry_run or no_push:
+        log.info("skip push/PR dry_run=%s no_push=%s refs=%s", dry_run, no_push, refs)
         return None
     branch = current_branch(project_root)
     if branch in PROTECTED_BRANCHES:
         raise OrchestratorHalt(
             SHUTDOWN_ERROR, f"refusing to push protected branch {branch}"
         )
+    log.info("git push -u origin HEAD branch=%s", branch)
     push = subprocess.run(
         ["git", "push", "-u", "origin", "HEAD"],
         cwd=project_root,
@@ -436,7 +928,9 @@ def ensure_push_and_pr(
     )
     if view.returncode == 0:
         try:
-            return json.loads(view.stdout).get("url")
+            url = json.loads(view.stdout).get("url")
+            log.info("existing PR url=%s", url)
+            return url
         except json.JSONDecodeError:
             return None
 
@@ -454,6 +948,7 @@ def ensure_push_and_pr(
             "- [ ] Confirm CI on this PR",
         ]
     )
+    log.info("gh pr create title=%s", title)
     create = subprocess.run(
         [
             "gh",
@@ -480,15 +975,19 @@ def ensure_push_and_pr(
         )
         if view2.returncode == 0:
             try:
-                return json.loads(view2.stdout).get("url")
+                url = json.loads(view2.stdout).get("url")
+                log.info("PR appeared after create race url=%s", url)
+                return url
             except json.JSONDecodeError:
                 pass
         raise OrchestratorHalt(
             SHUTDOWN_ERROR,
             create.stderr.strip() or create.stdout.strip() or "gh pr create failed",
         )
-    url = (create.stdout or "").strip().splitlines()
-    return url[-1] if url else None
+    url_lines = (create.stdout or "").strip().splitlines()
+    url = url_lines[-1] if url_lines else None
+    log.info("created PR url=%s", url)
+    return url
 
 
 # --------------------------------------------------------------------------- Cursor agent
@@ -511,7 +1010,7 @@ def run_cursor_agent(
     dry_run: bool,
 ) -> AgentRunResult:
     if dry_run:
-        print(f"[dry-run] agent prompt:\n{prompt}", file=sys.stderr)
+        log.info("[dry-run] agent prompt:\n%s", prompt)
         return AgentRunResult(status="dry_run", usage=None, agent_id=None, run_id=None)
 
     api_key = os.environ.get("CURSOR_API_KEY", "").strip()
@@ -520,6 +1019,7 @@ def run_cursor_agent(
 
     from cursor_sdk import Agent, CursorAgentError, LocalAgentOptions
 
+    log.info("agent start model=%s", model)
     try:
         with Agent.create(
             model=model,
@@ -544,6 +1044,15 @@ def run_cursor_agent(
             err = None
             if status == "error":
                 err = f"agent run failed: {run_id}"
+                log.error("agent error run_id=%s %s", run_id, format_token_cost(usage))
+            else:
+                log.info(
+                    "agent finished status=%s agent_id=%s run_id=%s %s",
+                    status,
+                    agent_id,
+                    run_id,
+                    format_token_cost(usage),
+                )
             return AgentRunResult(
                 status=str(status),
                 usage=usage,
@@ -581,6 +1090,112 @@ def first_ready(next_payload: dict[str, Any]) -> dict[str, Any] | None:
         if ready:
             return ready[0]
     return None
+
+
+def _is_bug_row(row: dict[str, Any]) -> bool:
+    if str(row.get("type") or "").lower() == "bug":
+        return True
+    name = str(row.get("ref") or row.get("file") or "")
+    return name.startswith("bug-")
+
+
+def _refine_rows(next_payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in next_payload.get("ready_to_refine") or []:
+        if isinstance(item, dict):
+            rows.append(item)
+    backlog = next_payload.get("backlog")
+    if isinstance(backlog, dict):
+        for item in backlog.get("ready_to_refine") or []:
+            if isinstance(item, dict):
+                rows.append(item)
+    return rows
+
+
+def collect_unrefined_bugs(next_payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Bug rows in ready_to_refine (initiative + nested backlog)."""
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for row in _refine_rows(next_payload):
+        if not _is_bug_row(row):
+            continue
+        ref = str(row.get("ref") or row.get("file") or row.get("id") or "").strip()
+        if not ref or ref in seen:
+            continue
+        seen.add(ref)
+        entry: dict[str, str] = {"ref": ref}
+        title = str(row.get("title") or "").strip()
+        if title:
+            entry["title"] = title
+        out.append(entry)
+    return out
+
+
+def explain_unrefined_bugs(bugs: list[dict[str, str]], stream=sys.stderr) -> None:
+    print("=== Unrefined bugs (not buildable yet) ===", file=stream)
+    for bug in bugs:
+        title = bug.get("title") or ""
+        suffix = f" — {title}" if title else ""
+        print(f"  {bug['ref']}{suffix}", file=stream)
+    print(
+        "These bugs sit in ready_to_refine until refined: true.\n"
+        "This orchestrator only runs bmad-build-auto; it does not refine.\n"
+        "Ask Sofia (skill bmad-agent-po) to refine each ticket, then re-run.",
+        file=stream,
+    )
+
+
+def prompt_unrefined_bugs_action() -> str:
+    """Interactive choice: continue | abort. Loops until a valid answer."""
+    while True:
+        try:
+            answer = (
+                input(
+                    "Unrefined bugs waiting. [c]ontinue with ready_to_start only, "
+                    "[a]bort so you can refine first? "
+                )
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            return "abort"
+        if answer in ("c", "continue"):
+            return "continue"
+        if answer in ("a", "abort"):
+            return "abort"
+        print("Please enter c or a.", file=sys.stderr)
+
+
+def gate_unrefined_bugs(
+    report: RunReport,
+    next_payload: dict[str, Any],
+    *,
+    yes: bool,
+    ready_exists: bool,
+) -> None:
+    """Explain unrefined bugs; optionally ask; halt when abort or only-bugs queue."""
+    bugs = collect_unrefined_bugs(next_payload)
+    report.unrefined_bugs = bugs
+    if not bugs:
+        return
+    explain_unrefined_bugs(bugs)
+    log.warning("unrefined bugs count=%s", len(bugs))
+    interactive = sys.stdin.isatty() and not yes
+    if interactive:
+        action = prompt_unrefined_bugs_action()
+        log.info("unrefined bugs user action=%s", action)
+        if action == "abort":
+            refs = ", ".join(b["ref"] for b in bugs)
+            raise OrchestratorHalt(
+                SHUTDOWN_UNREFINED_BUGS,
+                f"aborted with unrefined bugs: {refs}",
+            )
+    if not ready_exists:
+        refs = ", ".join(b["ref"] for b in bugs)
+        raise OrchestratorHalt(
+            SHUTDOWN_UNREFINED_BUGS,
+            f"no ready_to_start work; refine first: {refs}",
+        )
 
 
 def epic_fully_done(project_root: Path, epic: str) -> bool:
@@ -630,6 +1245,7 @@ def process_ticket(
     plan_path = Path(found["plan"]) if found.get("plan") else None
     plan_fm = read_frontmatter(plan_path) if plan_path else {}
     plan_status = str(plan_fm.get("status") or "")
+    tracker_id = str(found.get("tracker_id") or "").strip() or None
 
     plan_checkpoint = bool(found.get("plan_checkpoint"))
     done_checkpoint = bool(found.get("done_checkpoint"))
@@ -646,6 +1262,19 @@ def process_ticket(
     )
     halt_after_planning = bool(
         plan_checkpoint and plan_status not in post_plan_statuses
+    )
+
+    log.info(
+        "ticket start ref=%s epic=%s plan_status=%s tracker_id=%s "
+        "plan_checkpoint=%s done_checkpoint=%s halt_after_planning=%s followup_used=%s",
+        ticket_ref,
+        epic,
+        plan_status or "(none)",
+        tracker_id,
+        plan_checkpoint,
+        done_checkpoint,
+        halt_after_planning,
+        followup_used,
     )
 
     if not dry_run:
@@ -669,17 +1298,20 @@ def process_ticket(
         unit.outcome = "dry_run"
         unit.plan_status = plan_status or None
         report.add(unit)
+        log_cumulative_tokens(report)
         return None
 
     if agent.error:
         unit.outcome = "error"
         unit.reason = agent.error
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(SHUTDOWN_ERROR, agent.error)
 
     # Re-read plan after agent
     try:
         found = tickets_find(project_root, ticket_ref)
+        tracker_id = str(found.get("tracker_id") or "").strip() or tracker_id
     except OrchestratorHalt:
         pass
     plan_path = Path(found["plan"]) if found.get("plan") else plan_path
@@ -687,11 +1319,18 @@ def process_ticket(
     plan_status = str(plan_fm.get("status") or "")
     unit.plan_status = plan_status or None
     done_checkpoint = bool(found.get("done_checkpoint")) or done_checkpoint
+    log.info(
+        "ticket post-agent ref=%s plan_status=%s %s",
+        ticket_ref,
+        plan_status or "(none)",
+        format_token_cost(agent.usage),
+    )
 
     if halt_after_planning:
         unit.outcome = "checkpoint"
         unit.reason = "plan_checkpoint: waiting for human plan approval"
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(
             SHUTDOWN_PLAN_CHECKPOINT, f"ticket {ticket_ref}: plan checkpoint"
         )
@@ -703,6 +1342,7 @@ def process_ticket(
         unit.outcome = "blocked"
         unit.reason = reason
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(SHUTDOWN_BLOCKED, f"ticket {ticket_ref}: {reason}")
 
     if plan_status not in ("built", "done"):
@@ -711,6 +1351,7 @@ def process_ticket(
             f"unexpected plan status after agent: {plan_status or '(missing)'}"
         )
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(SHUTDOWN_ERROR, unit.reason)
 
     deferred_items = plan_fm.get("deferred") or []
@@ -718,11 +1359,13 @@ def process_ticket(
         deferred_items = []
     if plan_path and deferred_items:
         unit.deferred_count = append_deferred(plan_path, project_root, deferred_items)
+        log.info("deferred appended count=%s ref=%s", unit.deferred_count, ticket_ref)
 
     if done_checkpoint:
         unit.outcome = "checkpoint"
         unit.reason = "done_checkpoint: waiting for human continue"
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(
             SHUTDOWN_DONE_CHECKPOINT, f"ticket {ticket_ref}: done checkpoint"
         )
@@ -731,6 +1374,8 @@ def process_ticket(
     if followup and not followup_used:
         unit.outcome = "followup"
         report.add(unit)
+        log_cumulative_tokens(report)
+        log.info("followup re-dispatch ref=%s", ticket_ref)
         # One extra re-dispatch, then continue to mark policy on the second result.
         return process_ticket(
             project_root=project_root,
@@ -743,8 +1388,14 @@ def process_ticket(
         )
 
     if plan_path:
-        tickets_mark_done(project_root, ticket_ref, plan_path)
+        tickets_mark_done(
+            project_root,
+            ticket_ref,
+            plan_path,
+            tracker_id=tracker_id,
+        )
     unit.outcome = "done"
+    log.info("ticket marked done ref=%s", ticket_ref)
 
     pr_url = None
     if has_unpushed_or_new_commits(project_root):
@@ -757,8 +1408,10 @@ def process_ticket(
         )
         unit.pr_url = pr_url
     report.add(unit)
+    log_cumulative_tokens(report)
 
     if epic and epic_fully_done(project_root, str(epic)):
+        log.info("epic fully done epic=%s", epic)
         return str(epic)
     return None
 
@@ -772,6 +1425,7 @@ def run_retrospective(
     dry_run: bool,
     no_push: bool,
 ) -> None:
+    log.info("retrospective start epic=%s", epic)
     if not dry_run:
         require_clean_tree(project_root)
     agent = run_cursor_agent(
@@ -791,13 +1445,20 @@ def run_retrospective(
     if dry_run:
         unit.outcome = "dry_run"
         report.add(unit)
+        log_cumulative_tokens(report)
         return
     if agent.error:
         unit.outcome = "error"
         unit.reason = agent.error
         report.add(unit)
+        log_cumulative_tokens(report)
         raise OrchestratorHalt(SHUTDOWN_ERROR, agent.error)
     unit.outcome = "done"
+    log.info(
+        "retrospective agent finished epic=%s %s",
+        epic,
+        format_token_cost(agent.usage),
+    )
     pr_url = ensure_push_and_pr(
         project_root,
         epic=epic,
@@ -807,6 +1468,7 @@ def run_retrospective(
     )
     unit.pr_url = pr_url
     report.add(unit)
+    log_cumulative_tokens(report)
 
 
 def maybe_retro_after(
@@ -820,8 +1482,10 @@ def maybe_retro_after(
     retros_done: set[str],
 ) -> None:
     if not epic or epic in retros_done or epic == "backlog":
+        log.info("retrospective skip epic=%s reason=ineligible", epic)
         return
     if not epic_fully_done(project_root, epic):
+        log.info("retrospective skip epic=%s reason=not_fully_done", epic)
         return
     run_retrospective(
         project_root=project_root,
@@ -874,14 +1538,62 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument(
         "--no-push", action="store_true", help="skip git push and gh pr create"
     )
+    p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="non-interactive: skip unrefined-bugs prompt (still explains; continues if ready work exists)",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        help="write the final run report JSON to stdout",
+    )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="log orchestration steps at INFO",
+    )
+    p.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default=None,
+        help="logging level (overrides --verbose; default WARNING)",
+    )
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.log_level:
+        log_level = args.log_level
+    elif args.verbose:
+        log_level = "INFO"
+    else:
+        log_level = "WARNING"
+    configure_logging(log_level)
+
     report = RunReport()
     project_root = resolve_project_root(args.project_root)
     retros_done: set[str] = set()
+
+    if args.ticket:
+        mode = f"ticket:{args.ticket}"
+    elif args.epic:
+        mode = f"epic:{args.epic}"
+    else:
+        mode = "all"
+    log.info(
+        "orchestrate start mode=%s root=%s model=%s dry_run=%s no_push=%s yes=%s json=%s",
+        mode,
+        project_root,
+        args.model,
+        args.dry_run,
+        args.no_push,
+        args.yes,
+        args.json,
+    )
 
     try:
         if args.ticket:
@@ -905,12 +1617,20 @@ def main(argv: list[str] | None = None) -> int:
             report.shutdown = SHUTDOWN_COMPLETED
 
         elif args.epic:
+            nxt = tickets_next(project_root, args.epic)
+            ready = nxt.get("ready_to_start") or []
+            gate_unrefined_bugs(
+                report,
+                nxt,
+                yes=args.yes,
+                ready_exists=bool(ready),
+            )
             while True:
-                nxt = tickets_next(project_root, args.epic)
-                ready = nxt.get("ready_to_start") or []
                 if not ready:
+                    log.info("epic queue empty epic=%s", args.epic)
                     break
                 ref = str(ready[0].get("ref") or ready[0].get("id"))
+                log.info("epic queue next ref=%s", ref)
                 epic = process_ticket(
                     project_root=project_root,
                     ref=ref,
@@ -931,6 +1651,8 @@ def main(argv: list[str] | None = None) -> int:
                     no_push=args.no_push,
                     retros_done=retros_done,
                 )
+                nxt = tickets_next(project_root, args.epic)
+                ready = nxt.get("ready_to_start") or []
             if not args.dry_run and epic_fully_done(project_root, args.epic):
                 maybe_retro_after(
                     args.epic,
@@ -946,10 +1668,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # All mode: walk ready tickets/bugs across active initiative (+ backlog).
             seen: set[str] = set()
+            nxt = tickets_next(project_root)
+            gate_unrefined_bugs(
+                report,
+                nxt,
+                yes=args.yes,
+                ready_exists=first_ready(nxt) is not None,
+            )
             while True:
-                nxt = tickets_next(project_root)
                 item = first_ready(nxt)
                 if not item:
+                    log.info("all-mode queue empty")
                     break
                 ref = str(item.get("ref") or item.get("id"))
                 if ref in seen:
@@ -958,6 +1687,7 @@ def main(argv: list[str] | None = None) -> int:
                         f"ready ticket {ref} did not leave ready_to_start; refusing to loop",
                     )
                 seen.add(ref)
+                log.info("all-mode next ref=%s", ref)
                 if args.dry_run:
                     process_ticket(
                         project_root=project_root,
@@ -985,14 +1715,24 @@ def main(argv: list[str] | None = None) -> int:
                     no_push=args.no_push,
                     retros_done=retros_done,
                 )
+                nxt = tickets_next(project_root)
             report.shutdown = SHUTDOWN_COMPLETED
 
     except OrchestratorHalt as halt:
         report.shutdown = halt.shutdown
         report.shutdown_detail = halt.detail
+        log.warning(
+            "orchestrate halt shutdown=%s detail=%s", halt.shutdown, halt.detail
+        )
 
+    log.info(
+        "orchestrate finish shutdown=%s %s",
+        report.shutdown,
+        format_token_cost_from_report(report),
+    )
     report.print_human(sys.stderr)
-    print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
+    if args.json:
+        print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     if report.shutdown == SHUTDOWN_COMPLETED:
         return 0
     return 1
