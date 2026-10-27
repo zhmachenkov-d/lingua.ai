@@ -94,6 +94,29 @@ describe('ChatShell', () => {
     }
   });
 
+  it('surfaces system error when non-empty ctas map to zero chips', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('x');
+    shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'Выберите агента',
+      ctas: ['unknown-agent', 'also-unknown'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: frame.turn_id,
+    });
+    fixture.detectChanges();
+
+    expect(shell['inFlight']()).toBe(false);
+    expect(shell['ctas']()).toEqual([]);
+    expect(fixture.nativeElement.textContent).toContain('Выберите агента');
+    expect(fixture.nativeElement.textContent).toContain(UNPARSEABLE_FRAME);
+    expect(fixture.debugElement.queryAll(By.css('.cta'))).toHaveLength(0);
+  });
+
   it('ignores token_delta (no bubble)', () => {
     const shell = fixture.componentInstance;
     const before = shell['bubbles']().length;
