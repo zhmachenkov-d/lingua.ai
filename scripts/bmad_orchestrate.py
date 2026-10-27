@@ -111,6 +111,7 @@ class RunReport:
     shutdown_detail: str | None = None
     totals: dict[str, Any] = field(default_factory=dict)
     unrefined_bugs: list[dict[str, str]] = field(default_factory=list)
+    next_steps: str | None = None
 
     def add(self, unit: UnitReport) -> None:
         self.units.append(unit)
@@ -159,13 +160,16 @@ class RunReport:
 
     def to_dict(self) -> dict[str, Any]:
         self.finalize_totals()
-        return {
+        out: dict[str, Any] = {
             "shutdown": self.shutdown,
             "shutdown_detail": self.shutdown_detail,
             "units": [asdict(u) for u in self.units],
             "unrefined_bugs": list(self.unrefined_bugs),
             "totals": self.totals,
         }
+        if self.next_steps:
+            out["next_steps"] = self.next_steps
+        return out
 
     def format_human(self) -> str:
         self.finalize_totals()
@@ -221,6 +225,9 @@ class RunReport:
             f"deferred={t['deferred_items']}  retros={t['retrospectives']}  prs={t['prs']}  "
             f"unrefined_bugs={len(self.unrefined_bugs)}"
         )
+        if self.next_steps:
+            lines.append("")
+            lines.append(self.next_steps.rstrip())
         return "\n".join(lines) + "\n"
 
     def print_human(self, stream=sys.stderr) -> None:
@@ -961,6 +968,136 @@ def read_frontmatter(path: Path) -> dict[str, Any]:
     block = text[3:end].strip("\n")
     data = yaml.safe_load(block) or {}
     return data if isinstance(data, dict) else {}
+
+
+def ticket_slug_from_ref(ref: str) -> str:
+    """Basename of a ticket ref without a trailing ``.md``."""
+    name = Path(str(ref)).name
+    if name.endswith(".md"):
+        return name[:-3]
+    return name
+
+
+def find_build_auto_result(project_root: Path, slug: str) -> Path | None:
+    """Locate ``bmad-build-auto-result-<slug>.md`` under ``_bmad-output/``."""
+    output = project_root / "_bmad-output"
+    if not output.is_dir():
+        return None
+    matches = sorted(output.rglob(f"bmad-build-auto-result-{slug}.md"))
+    return matches[0] if matches else None
+
+
+def blocked_reason_from_artifact(path: Path | None, fm: dict[str, Any]) -> str:
+    """Prefer frontmatter ``blocked_reason``, else body ``Blocking condition:``."""
+    reason = str(fm.get("blocked_reason") or "").strip()
+    if reason:
+        return reason
+    if path is None or not path.is_file():
+        return "blocked"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        lower = line.lower().strip()
+        if lower.startswith("blocking condition:"):
+            value = line.split(":", 1)[1].strip()
+            return value or "blocked"
+        if lower.startswith("- **blocking condition:**") or lower.startswith(
+            "- **blocking condition**:"
+        ):
+            value = line.split(":", 1)[1].strip().strip("*").strip()
+            return value or "blocked"
+    return "blocked"
+
+
+def _fix_cause_guidance(reason: str) -> str:
+    lowered = reason.lower()
+    if "intent gap" in lowered or "unclear intent" in lowered:
+        return (
+            "Pin the open choice in the ticket Notes, plan intent, and/or tracker "
+            "issue comment (do not leave A vs B unresolved)."
+        )
+    if "dirty" in lowered or "version-control" in lowered:
+        return "Clean the working tree (commit or stash) and ensure the branch fits the ticket."
+    if "verification" in lowered:
+        return (
+            "Fix the failing verification command/check recorded under Auto Run Result."
+        )
+    if "no subagents" in lowered:
+        return "Re-run in an environment where subagents are available."
+    if "ticket not resolved" in lowered:
+        return "Fix the ticket ref so `tickets.py find` resolves it."
+    return "Resolve the blocking condition recorded in the artifact, then clear blocked status."
+
+
+def format_blocked_redispatch_steps(
+    *,
+    ticket_ref: str,
+    reason: str,
+    artifact_path: Path | None,
+    plan_path: Path | None,
+    status_from_result_only: bool,
+    model: str,
+) -> str:
+    """Human next-steps for re-dispatching after a blocked HALT."""
+    artifact = str(artifact_path) if artifact_path else "(none)"
+    plan = (
+        str(plan_path) if plan_path else "(unknown — from `tickets.py find` plan path)"
+    )
+    clear_lines: list[str]
+    if status_from_result_only:
+        clear_lines = [
+            "3. Clear blocked so a later dispatch will run:",
+            f"   - Create or update the plan at {plan}",
+            "     with frontmatter `status: ready-for-dev` (or `in-progress` / `in-review`",
+            "     as appropriate) and no `blocked_at` / `blocked_reason`.",
+            "   - `tickets.py mark` may refuse when store=github; edit the plan file locally.",
+            f"   - After pinning intent, remove or ignore the stale result file at {artifact}.",
+        ]
+    else:
+        clear_lines = [
+            "3. Clear blocked so a later dispatch will run:",
+            f"   - Edit plan frontmatter at {plan}: set `status` to the resume value",
+            "     (`ready-for-dev`, `in-progress`, or `in-review`), and clear `blocked_at`",
+            "     / `blocked_reason`.",
+            "   - `tickets.py mark` may refuse when store=github; edit the plan file locally.",
+            "   - Or delete a skeleton plan that only holds blocked frontmatter to start fresh.",
+        ]
+    lines = [
+        "Next steps to re-dispatch:",
+        f"1. What blocked it: ticket {ticket_ref}",
+        f"   reason: {reason}",
+        f"   artifact: {artifact}",
+        f"2. Fix the cause: {_fix_cause_guidance(reason)}",
+        *clear_lines,
+        "4. Re-dispatch:",
+        f"   uv run scripts/bmad_orchestrate.py --verbose --model={model} --ticket {ticket_ref}",
+    ]
+    return "\n".join(lines)
+
+
+def format_missing_status_next_steps(
+    *,
+    ticket_ref: str,
+    plan_path: Path | None,
+    model: str,
+) -> str:
+    """Guidance when plan status is missing and no result artifact was found."""
+    plan = (
+        str(plan_path) if plan_path else "(unknown — from `tickets.py find` plan path)"
+    )
+    slug = ticket_slug_from_ref(ticket_ref)
+    return "\n".join(
+        [
+            "Next steps to re-dispatch:",
+            f"1. Plan status was missing after the agent for ticket {ticket_ref}.",
+            f"   Expected plan: {plan}",
+            f"   Look for `_bmad-output/**/bmad-build-auto-result-{slug}.md` if the agent",
+            "   HALTed before creating a plan (HALT step-2 fallback).",
+            "2. Ensure the plan (or result file) records a terminal status: `blocked`,",
+            "   `built`, or `done`. For blocked, follow the blocked re-dispatch steps after",
+            "   fixing the cause and clearing blocked fields.",
+            "3. Re-dispatch:",
+            f"   uv run scripts/bmad_orchestrate.py --verbose --model={model} --ticket {ticket_ref}",
+        ]
+    )
 
 
 def set_plan_status(path: Path, status: str) -> None:
@@ -2397,6 +2534,28 @@ def process_ticket(
     plan_path = Path(found["plan"]) if found.get("plan") else plan_path
     plan_fm = read_frontmatter(plan_path) if plan_path else {}
     plan_status = str(plan_fm.get("status") or "")
+    result_path: Path | None = None
+    status_from_result_only = False
+    if not plan_status:
+        result_path = find_build_auto_result(
+            project_root, ticket_slug_from_ref(ticket_ref)
+        )
+        if result_path is not None:
+            result_fm = read_frontmatter(result_path)
+            result_status = str(result_fm.get("status") or "")
+            if result_status:
+                plan_status = result_status
+                status_from_result_only = True
+                # Prefer result blocked_reason when plan has none.
+                if not plan_fm.get("blocked_reason") and result_fm.get(
+                    "blocked_reason"
+                ):
+                    plan_fm = {**plan_fm, "blocked_reason": result_fm["blocked_reason"]}
+                log.info(
+                    "ticket post-agent result-file fallback path=%s status=%s",
+                    result_path,
+                    plan_status,
+                )
     unit.plan_status = plan_status or None
     done_checkpoint = bool(found.get("done_checkpoint")) or done_checkpoint
     log.info(
@@ -2421,12 +2580,25 @@ def process_ticket(
         raise OrchestratorHalt(SHUTDOWN_PLAN_CHECKPOINT, detail)
 
     if plan_status == "blocked":
-        reason = str(
-            plan_fm.get("blocked_reason") or found.get("blocked_reason") or "blocked"
+        artifact = (
+            result_path
+            if status_from_result_only
+            else (plan_path if plan_path and plan_path.is_file() else result_path)
         )
+        reason = blocked_reason_from_artifact(artifact, plan_fm)
+        if reason == "blocked":
+            reason = str(found.get("blocked_reason") or "blocked")
         unit.outcome = "blocked"
         unit.reason = reason
         detail = f"ticket {ticket_ref}: {reason}"
+        report.next_steps = format_blocked_redispatch_steps(
+            ticket_ref=ticket_ref,
+            reason=reason,
+            artifact_path=artifact,
+            plan_path=plan_path,
+            status_from_result_only=status_from_result_only,
+            model=model,
+        )
         _finish_ticket_unit(
             project_root=project_root,
             report=report,
@@ -2442,6 +2614,12 @@ def process_ticket(
         unit.reason = (
             f"unexpected plan status after agent: {plan_status or '(missing)'}"
         )
+        if not plan_status:
+            report.next_steps = format_missing_status_next_steps(
+                ticket_ref=ticket_ref,
+                plan_path=plan_path,
+                model=model,
+            )
         _finish_ticket_unit(
             project_root=project_root,
             report=report,
