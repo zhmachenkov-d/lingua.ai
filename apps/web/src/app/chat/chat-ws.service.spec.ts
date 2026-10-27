@@ -138,6 +138,18 @@ describe('ChatWsService', () => {
     expect(service.connectionState()).toBe('conflict');
   });
 
+  it('intentional close leaves connectionState idle with no live socket', () => {
+    const service = TestBed.inject(ChatWsService);
+    service.connect();
+    latestSocket!.simulateOpen();
+    expect(service.connectionState()).toBe('open');
+
+    service.close();
+    expect(service.connectionState()).not.toBe('open');
+    expect(service.connectionState()).toBe('idle');
+    expect(service.sendTurn('should-not-send')).toBe(false);
+  });
+
   it('retry opens a new socket without auto-loop', () => {
     const service = TestBed.inject(ChatWsService);
     service.connect();
