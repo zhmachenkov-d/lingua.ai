@@ -8,7 +8,7 @@ const CTA_LABELS: Record<CtaId, string> = {
 
 const KNOWN_IDS = new Set<string>(Object.keys(CTA_LABELS));
 
-/** Map server `ctas` ids → display chips; unknown ids are dropped. */
+/** Map server `ctas` ids → display chips; unknown ids are dropped (shell errors if all drop). */
 export function mapCtaIds(ids: readonly string[]): CtaChip[] {
   const chips: CtaChip[] = [];
   for (const id of ids) {

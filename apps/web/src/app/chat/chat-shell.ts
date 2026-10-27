@@ -141,7 +141,14 @@ export class ChatShell implements OnInit {
       if (event.backup_notice) {
         this.appendBubble({ role: 'notice', text: event.backup_notice });
       }
-      this.ctas.set(mapCtaIds(event.ctas));
+      const chips = mapCtaIds(event.ctas);
+      // Non-empty server list mapping to zero chips is contract drift — not silent success.
+      if (event.ctas.length > 0 && chips.length === 0) {
+        this.appendBubble({ role: 'system', text: UNPARSEABLE_FRAME });
+        this.ctas.set([]);
+        return;
+      }
+      this.ctas.set(chips);
       return;
     }
 
