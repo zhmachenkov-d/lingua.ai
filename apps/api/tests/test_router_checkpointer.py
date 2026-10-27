@@ -1,4 +1,4 @@
-"""Router checkpointer: five integration_db tests + unit coverage."""
+"""Router checkpointer: integration_db tip writes + unit coverage."""
 
 from __future__ import annotations
 
@@ -145,6 +145,50 @@ def test_handle_turn_success_persists_after_classify(migrated_url: str) -> None:
     snap = asyncio.run(get_turn_snapshot(database_url=migrated_url))
     assert snap is not None
     assert snap["last_user_text"] == "study"
+
+
+@pytest.mark.integration_db
+def test_handle_turn_multiturn_updates_last_user_text(migrated_url: str) -> None:
+    classify = AsyncMock(
+        return_value=ClassifyResult(handoff=None, used_backup=False),
+    )
+    with patch("app.router.turn.classify_turn", classify):
+        first = asyncio.run(
+            handle_turn("first turn", turn_id="t1", database_url=migrated_url)
+        )
+        second = asyncio.run(
+            handle_turn("second turn", turn_id="t2", database_url=migrated_url)
+        )
+    assert isinstance(first, TurnSuccess)
+    assert isinstance(second, TurnSuccess)
+    assert classify.await_count == 2
+    snap = asyncio.run(get_turn_snapshot(database_url=migrated_url))
+    assert snap is not None
+    assert snap["last_user_text"] == "second turn"
+    assert snap["active_agent"] is None
+
+
+@pytest.mark.integration_db
+def test_handle_turn_blank_after_nonblank_wipes_last_user_text(
+    migrated_url: str,
+) -> None:
+    classify = AsyncMock(
+        return_value=ClassifyResult(handoff=None, used_backup=False),
+    )
+    with patch("app.router.turn.classify_turn", classify):
+        first = asyncio.run(
+            handle_turn("kept until blank", turn_id="t1", database_url=migrated_url)
+        )
+        blank = asyncio.run(
+            handle_turn("  \t ", turn_id="t2", database_url=migrated_url)
+        )
+    assert isinstance(first, TurnSuccess)
+    assert isinstance(blank, TurnSuccess)
+    assert classify.await_count == 1
+    snap = asyncio.run(get_turn_snapshot(database_url=migrated_url))
+    assert snap is not None
+    assert snap["last_user_text"] == ""
+    assert snap["active_agent"] is None
 
 
 def test_handle_turn_llm_error_skips_snapshot() -> None:
