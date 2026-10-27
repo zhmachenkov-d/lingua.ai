@@ -132,6 +132,11 @@ export class ChatWsService {
     this.intentionalClose = true;
     const socket = this.socket;
     this.socket = null;
+    // Clear open state here: nulling socket first makes the close-event identity
+    // guard skip, which would otherwise leave connectionState stuck at open.
+    if (this.connectionState() !== 'failed' && this.connectionState() !== 'conflict') {
+      this.connectionState.set('idle');
+    }
     if (socket && socket.readyState < WebSocket.CLOSING) {
       socket.close();
     }
