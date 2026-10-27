@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Text, func, text
+from sqlalchemy import DateTime, Enum, ForeignKey, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,9 +23,14 @@ class Session(Base):
     """
 
     __tablename__ = "session"
-    __table_args__ = {
-        "comment": "NON-AUTHORITATIVE mirror; LangGraph checkpointer is STM SoT (AD-3)"
-    }
+    __table_args__ = (
+        UniqueConstraint("learner_id", name="session_learner_id_key"),
+        {
+            "comment": (
+                "NON-AUTHORITATIVE mirror; LangGraph checkpointer is STM SoT (AD-3)"
+            )
+        },
+    )
 
     id: Mapped[uuid.UUID] = uuid_pk()
     learner_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("learner_profile.id"))
