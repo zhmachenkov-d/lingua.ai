@@ -160,6 +160,24 @@ def test_dual_put_full_replace_single_row(
 
 
 @pytest.mark.integration_db
+def test_get_rejects_illegal_stored_cefr_map(
+    profile_client: TestClient, fresh_db_url: str
+) -> None:
+    """Corrupt JSONB must not be served as a successful bare CEFR map."""
+    with psycopg.connect(fresh_db_url) as conn:
+        conn.execute(
+            "INSERT INTO learner_profile (id, cefr_by_skill, goals, constraints) "
+            "VALUES (%s, %s::jsonb, ARRAY[]::text[], '{}'::jsonb)",
+            (str(MVP_LEARNER_ID), '{"overall": "A2+", "grammar": "A1"}'),
+        )
+        conn.commit()
+
+    response = profile_client.get("/profile/cefr")
+    assert response.status_code == 422
+    assert response.json() != {"overall": "A2+", "grammar": "A1"}
+
+
+@pytest.mark.integration_db
 def test_put_does_not_wipe_other_profile_columns(
     profile_client: TestClient, fresh_db_url: str
 ) -> None:
