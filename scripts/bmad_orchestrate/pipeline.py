@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .agent import run_cursor_agent, usage_dict
+from .agent import agent_call_limits, run_cursor_agent, usage_dict
 from .constants import (
     SHUTDOWN_BLOCKED,
     SHUTDOWN_COMPLETED,
@@ -360,6 +360,7 @@ def _process_ticket_legacy(
         prompt=prompt,
         dry_run=dry_run,
         resume_agent_id=resume_agent_id,
+        **agent_call_limits(),
     )
 
     unit = UnitReport(
@@ -654,6 +655,7 @@ def _process_ticket_pipeline(
             model=model,
             prompt=prompt,
             dry_run=True,
+            **agent_call_limits(policy.limits),
         )
         unit = UnitReport(
             ref=ticket_ref,
@@ -715,6 +717,7 @@ def _process_ticket_pipeline(
             prompt=prompt,
             dry_run=False,
             cwd=agent_cwd,
+            **agent_call_limits(policy.limits),
         )
         unit = UnitReport(
             ref=ticket_ref,
@@ -785,6 +788,7 @@ def _process_ticket_pipeline(
             dry_run=False,
             cwd=agent_cwd,
             resume_agent_id=None,
+            **agent_call_limits(policy.limits),
         )
         last_agent_id = agent.agent_id
         unit_state.agent_id = agent.agent_id
@@ -929,6 +933,7 @@ def _process_ticket_pipeline(
             dry_run=False,
             cwd=agent_cwd,
             resume_agent_id=None,
+            **agent_call_limits(policy.limits),
         )
         last_agent_id = review_agent.agent_id or last_agent_id
         if review_agent.error:
@@ -964,6 +969,7 @@ def _process_ticket_pipeline(
                 prompt=build_prompt(ticket_ref, fix_context=fix_outputs),
                 dry_run=False,
                 cwd=agent_cwd,
+                **agent_call_limits(policy.limits),
             )
             last_agent_id = fix_agent.agent_id or last_agent_id
             vresult = verify_unit(
@@ -1190,6 +1196,7 @@ def run_retrospective(
         prompt=retro_prompt(epic),
         dry_run=dry_run,
         cwd=cwd if not dry_run else None,
+        **agent_call_limits(policy.limits if policy else None),
     )
     unit = UnitReport(
         ref=ref,

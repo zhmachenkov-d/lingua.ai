@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .agent import run_cursor_agent
+from .agent import agent_call_limits, run_cursor_agent
 from .constants import SHUTDOWN_ERROR, OrchestratorHalt, log
 from .policy import Policy
 from .report import RunReport
@@ -308,6 +308,7 @@ def run_sweep(
         model=model,
         prompt=prompt,
         dry_run=dry_run,
+        **agent_call_limits(policy.limits),
     )
     if dry_run:
         run_state.status = "completed"
@@ -332,6 +333,7 @@ def run_sweep(
         prompt=write_prompt,
         dry_run=False,
         resume_agent_id=agent.agent_id,
+        **agent_call_limits(policy.limits),
     )
     if agent2.error:
         raise OrchestratorHalt(SHUTDOWN_ERROR, agent2.error)
@@ -423,7 +425,7 @@ def _run_bundle(
     intent: str,
 ) -> None:
     """Execute a sweep bundle via build-auto free-form intent in a worktree."""
-    from .agent import run_cursor_agent, usage_dict
+    from .agent import agent_call_limits, run_cursor_agent, usage_dict
     from .pipeline import build_prompt
     from .report import UnitReport, log_cumulative_tokens
     from .run_state import UnitAttemptState
@@ -461,6 +463,7 @@ def _run_bundle(
             ),
             dry_run=dry_run,
             cwd=cwd,
+            **agent_call_limits(policy.limits),
         )
         if agent.error:
             unit_state.last_verify = agent.error

@@ -1,9 +1,12 @@
 """Cursor SDK agent create/resume/stream."""
+
 from __future__ import annotations
 
 import json
 import os
+import queue
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +14,8 @@ from typing import Any
 
 from .constants import (
     AGENT_START_MAX_ATTEMPTS,
+    DEFAULT_AGENT_MAX_TOKENS,
+    DEFAULT_AGENT_TIMEOUT_S,
     DEFAULT_MODEL_ID,
     SHUTDOWN_ERROR,
     OrchestratorHalt,
@@ -234,6 +239,15 @@ def _soft_close_agent(agent: Any, err_type: type[BaseException]) -> None:
         log.warning("agent close failed: %s", close_err)
 
 
+def _soft_cancel_run(run: Any) -> None:
+    if run is None:
+        return
+    try:
+        run.cancel()
+    except Exception as err:  # noqa: BLE001 — best-effort cancel
+        log.warning("agent cancel failed: %s", getattr(err, "message", None) or err)
+
+
 def _retry_delay(err: Any, attempt: int) -> float:
     raw = getattr(err, "retry_after", None)
     if raw is not None:
@@ -244,6 +258,151 @@ def _retry_delay(err: Any, attempt: int) -> float:
     return float(min(2 ** (attempt - 1), 2))
 
 
+def _token_usage_from_raw(raw_usage: Any) -> TokenUsage | None:
+    if raw_usage is None:
+        return None
+    return TokenUsage(
+        input_tokens=int(getattr(raw_usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(raw_usage, "output_tokens", 0) or 0),
+        total_tokens=int(getattr(raw_usage, "total_tokens", 0) or 0),
+        cache_read_tokens=int(getattr(raw_usage, "cache_read_tokens", 0) or 0),
+        cache_write_tokens=int(getattr(raw_usage, "cache_write_tokens", 0) or 0),
+    )
+
+
+@dataclass
+class _StreamLimitsOutcome:
+    """Result of streaming one agent run under timeout/token caps."""
+
+    status: str
+    usage: TokenUsage | None = None
+    error: str | None = None
+
+
+def _stream_run_with_limits(
+    run: Any,
+    *,
+    timeout_s: int,
+    max_tokens: int,
+) -> _StreamLimitsOutcome:
+    """Drain ``run.messages()`` with wall-clock + token caps, then ``wait()``.
+
+    Timeout uses a producer thread so a blocked ``next(message)`` still expires.
+    Mid-stream ``usage`` messages enforce the token ceiling early via ``cancel``.
+    """
+    deadline = time.monotonic() + timeout_s if timeout_s > 0 else None
+    latest_usage: TokenUsage | None = None
+    msg_q: queue.Queue[tuple[str, Any]] = queue.Queue()
+
+    def _producer() -> None:
+        try:
+            for message in run.messages():
+                msg_q.put(("msg", message))
+            msg_q.put(("done", None))
+        except Exception as err:  # noqa: BLE001 — forwarded to consumer
+            msg_q.put(("err", err))
+
+    thread = threading.Thread(target=_producer, name="bmad-agent-stream", daemon=True)
+    coalescer = _AgentTextCoalescer()
+    _emit_agent_line("status", "----- begin -----")
+    thread.start()
+
+    def _timeout_outcome() -> _StreamLimitsOutcome:
+        detail = f"agent call timed out after {timeout_s}s"
+        log.error("%s", detail)
+        _soft_cancel_run(run)
+        coalescer.flush()
+        _emit_agent_line(
+            "status",
+            f"----- end status=cancelled {format_token_cost(latest_usage)} -----",
+        )
+        return _StreamLimitsOutcome(
+            status="cancelled", usage=latest_usage, error=detail
+        )
+
+    def _token_limit_outcome(usage: TokenUsage) -> _StreamLimitsOutcome:
+        detail = (
+            f"agent call exceeded token limit ({usage.total_tokens} > {max_tokens})"
+        )
+        log.error("%s", detail)
+        _soft_cancel_run(run)
+        coalescer.flush()
+        _emit_agent_line(
+            "status",
+            f"----- end status=error {format_token_cost(usage)} -----",
+        )
+        return _StreamLimitsOutcome(status="error", usage=usage, error=detail)
+
+    try:
+        while True:
+            get_timeout: float | None = None
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return _timeout_outcome()
+                get_timeout = remaining
+            try:
+                kind, payload = msg_q.get(timeout=get_timeout)
+            except queue.Empty:
+                return _timeout_outcome()
+
+            if kind == "err":
+                raise payload
+            if kind == "done":
+                break
+
+            message = payload
+            if getattr(message, "type", None) == "usage":
+                usage = _token_usage_from_raw(getattr(message, "usage", None))
+                if usage is not None:
+                    latest_usage = usage
+                    _emit_agent_line("status", f"usage {format_token_cost(usage)}")
+                    if max_tokens > 0 and usage.total_tokens > max_tokens:
+                        return _token_limit_outcome(usage)
+                continue
+            coalescer.feed(message)
+    finally:
+        coalescer.flush()
+        thread.join(timeout=5.0)
+
+    phase_wait_result = run.wait()
+    usage = (
+        _token_usage_from_raw(
+            getattr(phase_wait_result, "usage", None) or getattr(run, "usage", None)
+        )
+        or latest_usage
+    )
+    if max_tokens > 0 and usage is not None and usage.total_tokens > max_tokens:
+        return _token_limit_outcome(usage)
+
+    status = getattr(phase_wait_result, "status", None) or "unknown"
+    _emit_agent_line(
+        "status",
+        f"----- end status={status} {format_token_cost(usage)} -----",
+    )
+    err = None
+    if status == "error":
+        run_id = getattr(run, "run_id", None) or getattr(run, "id", None)
+        err = f"agent run failed: {run_id}"
+        log.error("agent error run_id=%s %s", run_id, format_token_cost(usage))
+    return _StreamLimitsOutcome(status=str(status), usage=usage, error=err)
+
+
+def agent_call_limits(limits: Any | None = None) -> dict[str, int]:
+    """Kwargs for ``run_cursor_agent`` timeout/token caps from ``LimitsPolicy``."""
+    if limits is None:
+        return {
+            "timeout_s": DEFAULT_AGENT_TIMEOUT_S,
+            "max_tokens": DEFAULT_AGENT_MAX_TOKENS,
+        }
+    return {
+        "timeout_s": int(getattr(limits, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S)),
+        "max_tokens": int(
+            getattr(limits, "agent_max_tokens", DEFAULT_AGENT_MAX_TOKENS)
+        ),
+    }
+
+
 def run_cursor_agent(
     *,
     project_root: Path,
@@ -252,6 +411,8 @@ def run_cursor_agent(
     dry_run: bool,
     resume_agent_id: str | None = None,
     cwd: Path | None = None,
+    timeout_s: int = DEFAULT_AGENT_TIMEOUT_S,
+    max_tokens: int = DEFAULT_AGENT_MAX_TOKENS,
 ) -> AgentRunResult:
     agent_cwd = cwd or project_root
     if dry_run:
@@ -272,10 +433,12 @@ def run_cursor_agent(
         local=local_opts,
     )
     log.info(
-        "agent start model=%s cwd=%s resume_agent_id=%s",
+        "agent start model=%s cwd=%s resume_agent_id=%s timeout_s=%s max_tokens=%s",
         model,
         agent_cwd,
         resume_agent_id or "(none)",
+        timeout_s,
+        max_tokens,
     )
     use_resume = bool(resume_agent_id)
 
@@ -321,51 +484,23 @@ def run_cursor_agent(
             log.info("agent sent agent_id=%s run_id=%s", agent_id, run_id)
 
             phase = "stream"
-            coalescer = _AgentTextCoalescer()
-            _emit_agent_line("status", "----- begin -----")
-            for message in run.messages():
-                coalescer.feed(message)
-            coalescer.flush()
-
-            phase = "wait"
-            result = run.wait()
-            usage = None
-            raw_usage = getattr(result, "usage", None) or getattr(run, "usage", None)
-            if raw_usage is not None:
-                usage = TokenUsage(
-                    input_tokens=int(getattr(raw_usage, "input_tokens", 0) or 0),
-                    output_tokens=int(getattr(raw_usage, "output_tokens", 0) or 0),
-                    total_tokens=int(getattr(raw_usage, "total_tokens", 0) or 0),
-                    cache_read_tokens=int(
-                        getattr(raw_usage, "cache_read_tokens", 0) or 0
-                    ),
-                    cache_write_tokens=int(
-                        getattr(raw_usage, "cache_write_tokens", 0) or 0
-                    ),
-                )
-            status = getattr(result, "status", None) or "unknown"
-            _emit_agent_line(
-                "status",
-                f"----- end status={status} {format_token_cost(usage)} -----",
+            outcome = _stream_run_with_limits(
+                run, timeout_s=timeout_s, max_tokens=max_tokens
             )
-            err = None
-            if status == "error":
-                err = f"agent run failed: {run_id}"
-                log.error("agent error run_id=%s %s", run_id, format_token_cost(usage))
-            else:
+            if outcome.error is None:
                 log.info(
                     "agent finished status=%s agent_id=%s run_id=%s %s",
-                    status,
+                    outcome.status,
                     agent_id,
                     run_id,
-                    format_token_cost(usage),
+                    format_token_cost(outcome.usage),
                 )
             return AgentRunResult(
-                status=str(status),
-                usage=usage,
+                status=outcome.status,
+                usage=outcome.usage,
                 agent_id=str(agent_id) if agent_id else None,
                 run_id=str(run_id) if run_id else None,
-                error=err,
+                error=outcome.error,
             )
         except KeyboardInterrupt as err:
             _soft_close_agent(agent, CursorAgentError)
