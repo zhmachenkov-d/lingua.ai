@@ -42,13 +42,22 @@ WS_ALREADY_OPEN_CLOSE_CODE = 4009
 async def _reject_conflict(websocket: WebSocket) -> None:
     """Accept briefly, send AD-6 error, then close — browsers never see HTTP status."""
     await websocket.accept()
-    await websocket.send_json(
-        ErrorEvent(
-            message=ERROR_MESSAGES["ws_already_open"],
-            code="ws_already_open",
-        ).to_wire()
-    )
-    await websocket.close(code=WS_ALREADY_OPEN_CLOSE_CODE)
+    try:
+        await websocket.send_json(
+            ErrorEvent(
+                message=ERROR_MESSAGES["ws_already_open"],
+                code="ws_already_open",
+            ).to_wire()
+        )
+    finally:
+        if (
+            websocket.client_state == WebSocketState.CONNECTED
+            and websocket.application_state == WebSocketState.CONNECTED
+        ):
+            try:
+                await websocket.close(code=WS_ALREADY_OPEN_CLOSE_CODE)
+            except RuntimeError:
+                pass
 
 
 def _parse_turn_id(raw: object) -> str | None:
