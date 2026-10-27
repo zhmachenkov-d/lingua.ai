@@ -1,0 +1,315 @@
+"""Unit tests for scripts/bmad_orchestrate.py result-file fallback and reports."""
+
+from __future__ import annotations
+
+import importlib.util
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+SCRIPT = Path(__file__).resolve().parents[1] / "bmad_orchestrate.py"
+
+
+def load_orch():
+    name = "bmad_orchestrate_under_test"
+    spec = importlib.util.spec_from_file_location(name, SCRIPT)
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+orch = load_orch()
+
+
+class TicketSlugTests(unittest.TestCase):
+    def test_strips_md_and_dirname(self) -> None:
+        self.assertEqual(
+            orch.ticket_slug_from_ref("backlog/bug-session-mirror.md"),
+            "bug-session-mirror",
+        )
+        self.assertEqual(orch.ticket_slug_from_ref("bug-x"), "bug-x")
+
+
+class FindResultTests(unittest.TestCase):
+    def test_finds_nested_result_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = (
+                root
+                / "_bmad-output"
+                / "initiative-mvp"
+                / "bmad-build-auto-result-bug-x.md"
+            )
+            path.parent.mkdir(parents=True)
+            path.write_text("---\nstatus: blocked\n---\n", encoding="utf-8")
+            found = orch.find_build_auto_result(root, "bug-x")
+            self.assertEqual(found, path)
+
+    def test_missing_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_bmad-output").mkdir()
+            self.assertIsNone(orch.find_build_auto_result(root, "nope"))
+
+
+class BlockedReasonTests(unittest.TestCase):
+    def test_frontmatter_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "r.md"
+            path.write_text(
+                "---\nstatus: blocked\nblocked_reason: from-fm\n---\n"
+                "Blocking condition: from-body\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                orch.blocked_reason_from_artifact(path, {"blocked_reason": "from-fm"}),
+                "from-fm",
+            )
+
+    def test_body_blocking_condition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "r.md"
+            path.write_text(
+                "---\nstatus: blocked\n---\n\nBlocking condition: intent gap\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                orch.blocked_reason_from_artifact(path, {}),
+                "intent gap",
+            )
+
+
+class FormatNextStepsTests(unittest.TestCase):
+    def test_blocked_report_includes_redispatch(self) -> None:
+        text = orch.format_blocked_redispatch_steps(
+            ticket_ref="bug-x.md",
+            reason="intent gap",
+            artifact_path=Path("/tmp/result.md"),
+            plan_path=Path("/tmp/bug-x-plan.md"),
+            status_from_result_only=True,
+            model="auto",
+        )
+        self.assertIn("Next steps to re-dispatch:", text)
+        self.assertIn("bug-x.md", text)
+        self.assertIn("intent gap", text)
+        self.assertIn("store=github", text)
+        self.assertIn(
+            "uv run scripts/bmad_orchestrate.py --verbose --model=auto --ticket bug-x.md",
+            text,
+        )
+
+    def test_missing_status_mentions_result_glob(self) -> None:
+        text = orch.format_missing_status_next_steps(
+            ticket_ref="bug-x.md",
+            plan_path=Path("/tmp/bug-x-plan.md"),
+            model="auto",
+        )
+        self.assertIn("bmad-build-auto-result-bug-x.md", text)
+        self.assertIn("--ticket bug-x.md", text)
+
+
+class RunReportNextStepsTests(unittest.TestCase):
+    def test_format_human_appends_next_steps(self) -> None:
+        report = orch.RunReport(
+            shutdown=orch.SHUTDOWN_BLOCKED,
+            shutdown_detail="ticket bug-x.md: intent gap",
+            next_steps="Next steps to re-dispatch:\n1. What blocked it",
+        )
+        report.add(
+            orch.UnitReport(
+                ref="bug-x.md",
+                kind="ticket",
+                outcome="blocked",
+                reason="intent gap",
+            )
+        )
+        human = report.format_human()
+        self.assertIn("Shutdown: blocked", human)
+        self.assertIn("Next steps to re-dispatch:", human)
+        data = report.to_dict()
+        self.assertEqual(data["next_steps"], report.next_steps)
+
+
+class ProcessTicketResultFallbackTests(unittest.TestCase):
+    def _write_result(self, root: Path, slug: str, body: str) -> Path:
+        path = (
+            root
+            / "_bmad-output"
+            / "initiative-mvp"
+            / f"bmad-build-auto-result-{slug}.md"
+        )
+        path.parent.mkdir(parents=True)
+        path.write_text(body, encoding="utf-8")
+        return path
+
+    def test_missing_plan_result_blocked_raises_shutdown_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slug = "bug-session-mirror-never-written-on-turn-path"
+            ref = f"{slug}.md"
+            plan_path = root / "_bmad-output" / "backlog" / f"{slug}-plan.md"
+            plan_path.parent.mkdir(parents=True)
+            # Plan path known to find, but file absent → missing status.
+            self._write_result(
+                root,
+                slug,
+                "---\nstatus: blocked\n---\n\nBlocking condition: intent gap\n",
+            )
+            report = orch.RunReport()
+            agent = mock.Mock(
+                error=None,
+                usage=None,
+                agent_id="agent-1",
+                run_id="run-1",
+            )
+            found = {
+                "ref": ref,
+                "plan": str(plan_path),
+                "tracker_id": "72",
+                "type": "bug",
+                "title": "Session mirror",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+            with (
+                mock.patch.object(orch, "tickets_find", return_value=found),
+                mock.patch.object(orch, "require_clean_tree"),
+                mock.patch.object(orch, "checkout_work_branch"),
+                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+                mock.patch.object(orch, "tracker_post_report"),
+            ):
+                with self.assertRaises(orch.OrchestratorHalt) as ctx:
+                    orch.process_ticket(
+                        project_root=root,
+                        ref=ref,
+                        report=report,
+                        model="auto",
+                        dry_run=False,
+                        no_push=True,
+                    )
+            self.assertEqual(ctx.exception.shutdown, orch.SHUTDOWN_BLOCKED)
+            self.assertIn("intent gap", ctx.exception.detail or "")
+            self.assertEqual(report.shutdown, orch.SHUTDOWN_BLOCKED)
+            self.assertIsNotNone(report.next_steps)
+            assert report.next_steps is not None
+            self.assertIn("Next steps to re-dispatch:", report.next_steps)
+            self.assertIn("--ticket ", report.next_steps)
+            self.assertIn("store=github", report.next_steps)
+            human = report.format_human()
+            self.assertIn("Next steps to re-dispatch:", human)
+            unit = report.units[-1]
+            self.assertEqual(unit.outcome, "blocked")
+            self.assertEqual(unit.plan_status, "blocked")
+
+    def test_plan_built_ignores_stale_result_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slug = "bug-x"
+            ref = f"{slug}.md"
+            plan_path = root / "_bmad-output" / "backlog" / f"{slug}-plan.md"
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "---\nstatus: built\nfollowup_review_recommended: false\ndeferred: []\n---\n",
+                encoding="utf-8",
+            )
+            self._write_result(
+                root,
+                slug,
+                "---\nstatus: blocked\n---\n\nBlocking condition: stale\n",
+            )
+            report = orch.RunReport()
+            agent = mock.Mock(
+                error=None,
+                usage=None,
+                agent_id="agent-1",
+                run_id="run-1",
+            )
+            found = {
+                "ref": ref,
+                "plan": str(plan_path),
+                "tracker_id": "",
+                "type": "bug",
+                "title": "x",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+
+            def fake_mark_done(*_a, **_k):
+                return None
+
+            with (
+                mock.patch.object(orch, "tickets_find", return_value=found),
+                mock.patch.object(orch, "require_clean_tree"),
+                mock.patch.object(orch, "checkout_work_branch"),
+                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+                mock.patch.object(
+                    orch, "tickets_mark_done", side_effect=fake_mark_done
+                ),
+                mock.patch.object(
+                    orch, "has_unpushed_or_new_commits", return_value=False
+                ),
+            ):
+                orch.process_ticket(
+                    project_root=root,
+                    ref=ref,
+                    report=report,
+                    model="auto",
+                    dry_run=False,
+                    no_push=True,
+                )
+            self.assertIsNone(report.next_steps)
+            self.assertEqual(report.units[-1].outcome, "done")
+            self.assertEqual(report.units[-1].plan_status, "built")
+
+    def test_missing_plan_and_no_result_is_error_with_next_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_bmad-output").mkdir()
+            slug = "bug-missing"
+            ref = f"{slug}.md"
+            plan_path = root / "_bmad-output" / "backlog" / f"{slug}-plan.md"
+            plan_path.parent.mkdir(parents=True)
+            report = orch.RunReport()
+            agent = mock.Mock(
+                error=None,
+                usage=None,
+                agent_id="agent-1",
+                run_id="run-1",
+            )
+            found = {
+                "ref": ref,
+                "plan": str(plan_path),
+                "tracker_id": "",
+                "type": "bug",
+                "title": "x",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+            with (
+                mock.patch.object(orch, "tickets_find", return_value=found),
+                mock.patch.object(orch, "require_clean_tree"),
+                mock.patch.object(orch, "checkout_work_branch"),
+                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+            ):
+                with self.assertRaises(orch.OrchestratorHalt) as ctx:
+                    orch.process_ticket(
+                        project_root=root,
+                        ref=ref,
+                        report=report,
+                        model="auto",
+                        dry_run=False,
+                        no_push=True,
+                    )
+            self.assertEqual(ctx.exception.shutdown, orch.SHUTDOWN_ERROR)
+            self.assertIn("(missing)", ctx.exception.detail or "")
+            assert report.next_steps is not None
+            self.assertIn("bmad-build-auto-result-bug-missing.md", report.next_steps)
+            self.assertIn("Next steps to re-dispatch:", report.format_human())
+
+
+if __name__ == "__main__":
+    unittest.main()
