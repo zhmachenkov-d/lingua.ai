@@ -17,6 +17,9 @@ import { ChatWsService } from './chat-ws.service';
 import { mapCtaIds } from './cta-labels';
 import type { ChatBubble, CtaChip, ServerEvent } from './chat.types';
 
+/** Idle ms with no matching terminal event before network-fail recovery (#60). */
+export const TURN_IDLE_MS = 30_000;
+
 @Component({
   selector: 'app-chat-shell',
   imports: [FormsModule],
@@ -27,6 +30,7 @@ export class ChatShell implements OnInit {
   private readonly ws = inject(ChatWsService);
   private readonly destroyRef = inject(DestroyRef);
   private nextBubbleId = 0;
+  private turnIdleTimer: ReturnType<typeof setTimeout> | null = null;
 
   protected readonly brandName = BRAND_NAME;
   protected readonly composerPlaceholder = COMPOSER_PLACEHOLDER;
@@ -47,6 +51,7 @@ export class ChatShell implements OnInit {
   protected readonly connectionState = this.ws.connectionState;
 
   constructor() {
+    this.destroyRef.onDestroy(() => this.clearTurnIdleWatchdog());
     effect(() => {
       const state = this.connectionState();
       if (state === 'failed') {
@@ -101,6 +106,7 @@ export class ChatShell implements OnInit {
     this.draft.set('');
     this.pendingTurnId = turnId;
     this.inFlight.set(true);
+    this.armTurnIdleWatchdog();
     this.ctas.set([]);
   }
 
@@ -112,6 +118,11 @@ export class ChatShell implements OnInit {
   }
 
   private onServerEvent(event: ServerEvent): void {
+    // Network-fail recovery (idle watchdog or socket fail): ignore further frames until retry.
+    if (this.showNetworkFail()) {
+      return;
+    }
+
     if (event.kind === 'token_delta') {
       // Parsed and ignored — no streaming UI this story.
       return;
@@ -147,8 +158,24 @@ export class ChatShell implements OnInit {
   }
 
   private clearPendingTurn(): void {
+    this.clearTurnIdleWatchdog();
     this.pendingTurnId = null;
     this.inFlight.set(false);
+  }
+
+  private armTurnIdleWatchdog(): void {
+    this.clearTurnIdleWatchdog();
+    this.turnIdleTimer = setTimeout(() => {
+      this.turnIdleTimer = null;
+      this.clearInFlightAndShowNetworkFail();
+    }, TURN_IDLE_MS);
+  }
+
+  private clearTurnIdleWatchdog(): void {
+    if (this.turnIdleTimer !== null) {
+      clearTimeout(this.turnIdleTimer);
+      this.turnIdleTimer = null;
+    }
   }
 
   /** Recover from dropped/malformed frames only while a turn is waiting on a terminal event. */
