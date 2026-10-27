@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncIterator
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -33,6 +34,12 @@ async def get_session() -> AsyncIterator[AsyncSession]:
     """FastAPI Depends — one AsyncSession per request."""
     async with _factory()() as session:
         yield session
+
+
+async def probe_database() -> None:
+    """Cheap connectivity check for readiness (raises if Postgres is unreachable)."""
+    async with get_engine().connect() as conn:
+        await conn.execute(text("SELECT 1"))
 
 
 async def dispose_engine() -> None:

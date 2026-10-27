@@ -2,11 +2,12 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 from app.api.routes.profile import router as profile_router
 from app.api.routes.ws import router as ws_router
 from app.db.bootstrap import bootstrap
-from app.db.session import dispose_engine
+from app.db.session import dispose_engine, probe_database
 
 
 @asynccontextmanager
@@ -25,4 +26,15 @@ app.include_router(ws_router)
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    """Liveness: process is up after successful bootstrap (no DB probe)."""
     return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready() -> JSONResponse:
+    """Readiness: fails when Postgres is unreachable after bootstrap."""
+    try:
+        await probe_database()
+    except Exception:
+        return JSONResponse({"status": "unavailable"}, status_code=503)
+    return JSONResponse({"status": "ok"})

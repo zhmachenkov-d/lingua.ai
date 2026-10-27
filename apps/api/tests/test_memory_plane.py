@@ -552,9 +552,12 @@ def test_lifespan_bootstraps_then_health_ok(
     monkeypatch.setenv("DATABASE_URL", fresh_db_url)
     with TestClient(app) as client:
         assert "checkpoints" in _tables(fresh_db_url)  # already done before serving
-        response = client.get("/health")
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+        health = client.get("/health")
+        ready = client.get("/ready")
+    assert health.status_code == 200
+    assert health.json() == {"status": "ok"}
+    assert ready.status_code == 200
+    assert ready.json() == {"status": "ok"}
 
 
 @pytest.mark.integration_db
