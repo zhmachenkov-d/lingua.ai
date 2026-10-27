@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -36,6 +37,8 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
 }
 
 THREAD_ID: Final = str(MVP_LEARNER_ID)
+# Align with LLM REQUEST_TIMEOUT_SECONDS — hung aput must not pin the WS turn.
+CHECKPOINTER_WRITE_TIMEOUT_SECONDS: Final = 30.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,32 +117,41 @@ async def write_turn_snapshot(
     config: dict[str, Any] = {
         "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
     }
+
     async with open_checkpointer(database_url) as saver:
-        prior = await saver.aget(config)  # type: ignore[arg-type]
-        versions = _next_channel_versions(saver, prior, channels)
-        checkpoint = _checkpoint_for_snapshot(
-            last_user_text=last_user_text,
-            turn_at=turn_at,
-            channel_versions=versions,
-        )
-        if prior is not None:
-            config = {
-                "configurable": {
-                    "thread_id": THREAD_ID,
-                    "checkpoint_ns": "",
-                    "checkpoint_id": prior["id"],
+
+        async def _persist() -> dict[str, Any]:
+            prior = await saver.aget(config)  # type: ignore[arg-type]
+            versions = _next_channel_versions(saver, prior, channels)
+            checkpoint = _checkpoint_for_snapshot(
+                last_user_text=last_user_text,
+                turn_at=turn_at,
+                channel_versions=versions,
+            )
+            write_config = config
+            if prior is not None:
+                write_config = {
+                    "configurable": {
+                        "thread_id": THREAD_ID,
+                        "checkpoint_ns": "",
+                        "checkpoint_id": prior["id"],
+                    }
                 }
-            }
-        version_map: dict[str, str | int | float] = dict(versions)
-        await saver.aput(
-            config,  # type: ignore[arg-type]
-            checkpoint,  # type: ignore[arg-type]
-            {"source": "update", "step": 0, "parents": {}},
-            version_map,
+            version_map: dict[str, str | int | float] = dict(versions)
+            await saver.aput(
+                write_config,  # type: ignore[arg-type]
+                checkpoint,  # type: ignore[arg-type]
+                {"source": "update", "step": 0, "parents": {}},
+                version_map,
+            )
+            values = checkpoint["channel_values"]
+            assert isinstance(values, dict)
+            return values
+
+        return await asyncio.wait_for(
+            _persist(),
+            timeout=CHECKPOINTER_WRITE_TIMEOUT_SECONDS,
         )
-    values = checkpoint["channel_values"]
-    assert isinstance(values, dict)
-    return values
 
 
 async def get_turn_snapshot(

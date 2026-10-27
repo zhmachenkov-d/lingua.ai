@@ -1,9 +1,10 @@
-"""Router checkpointer: five integration_db tests + LLM-error skip unit."""
+"""Router checkpointer: five integration_db tests + unit coverage."""
 
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, patch
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.db.bootstrap import bootstrap
@@ -161,3 +162,44 @@ def test_handle_turn_llm_error_skips_snapshot() -> None:
     write.assert_not_awaited()
     assert isinstance(result, TurnError)
     assert result.code == "llm_unavailable"
+
+
+def _hung_checkpointer_open():
+    """Async context manager yielding a saver whose ``aput`` never completes."""
+
+    async def hung_aput(*_a: object, **_k: object) -> None:
+        await asyncio.sleep(60)
+
+    saver = MagicMock()
+    saver.aget = AsyncMock(return_value=None)
+    saver.aput = hung_aput
+    saver.get_next_version = MagicMock(
+        return_value="00000000000000000000000000000001.0.0"
+    )
+
+    @asynccontextmanager
+    async def fake_open(_database_url: str | None = None):
+        yield saver
+
+    return fake_open
+
+
+def test_write_turn_snapshot_times_out_on_hung_aput() -> None:
+    with (
+        patch("app.router.turn.open_checkpointer", _hung_checkpointer_open()),
+        patch("app.router.turn.CHECKPOINTER_WRITE_TIMEOUT_SECONDS", 0.05),
+    ):
+        with pytest.raises(TimeoutError):
+            asyncio.run(write_turn_snapshot(last_user_text="hung"))
+
+
+def test_handle_turn_maps_snapshot_timeout_to_checkpointer_write_failed() -> None:
+    with (
+        patch("app.router.turn.open_checkpointer", _hung_checkpointer_open()),
+        patch("app.router.turn.CHECKPOINTER_WRITE_TIMEOUT_SECONDS", 0.05),
+    ):
+        # Blank path skips LLM and still writes the snapshot.
+        result = asyncio.run(handle_turn("  \t ", turn_id="to"))
+    assert isinstance(result, TurnError)
+    assert result.code == "checkpointer_write_failed"
+    assert result.turn_id == "to"
