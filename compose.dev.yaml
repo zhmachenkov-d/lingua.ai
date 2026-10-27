@@ -32,7 +32,11 @@ services:
       network: host
     network_mode: host
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@127.0.0.1:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      # Build DATABASE_URL in-process (percent-encodes password); do not interpolate raw secrets into the URL here.
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_HOST: 127.0.0.1
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
     command:
       ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"]

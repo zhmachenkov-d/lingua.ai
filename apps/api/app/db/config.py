@@ -1,18 +1,57 @@
 import os
+from urllib.parse import quote
 
 
 class DatabaseConfigError(RuntimeError):
     pass
 
 
-def get_database_url() -> str:
-    """Compose-style `postgresql://` URL (psycopg3 / AsyncPostgresSaver)."""
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
+_COMPONENT_KEYS = (
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+    "POSTGRES_HOST",
+)
+
+
+def _build_url_from_components() -> str | None:
+    values = {key: os.environ.get(key, "").strip() for key in _COMPONENT_KEYS}
+    if not any(values.values()):
+        return None
+    missing = [key for key, value in values.items() if not value]
+    if missing:
         raise DatabaseConfigError(
-            "DATABASE_URL is not set; the api cannot bootstrap without Postgres"
+            "incomplete Postgres URL components for DATABASE_URL construction "
+            f"(missing {', '.join(missing)}); set an explicit DATABASE_URL or "
+            f"all of {', '.join(_COMPONENT_KEYS)} as raw secrets — the api "
+            "percent-encodes user/password/db when building the URL"
         )
-    return url
+    user = quote(values["POSTGRES_USER"], safe="")
+    password = quote(values["POSTGRES_PASSWORD"], safe="")
+    db = quote(values["POSTGRES_DB"], safe="")
+    host = values["POSTGRES_HOST"]
+    return f"postgresql://{user}:{password}@{host}:5432/{db}"
+
+
+def get_database_url() -> str:
+    """Compose-style `postgresql://` URL (psycopg3 / AsyncPostgresSaver).
+
+    Prefer an explicit `DATABASE_URL` (CI/tests). Otherwise build one from
+    `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST`,
+    percent-encoding userinfo and db so URL-reserved password characters work.
+    """
+    url = os.environ.get("DATABASE_URL", "").strip()
+    if url:
+        return url
+    built = _build_url_from_components()
+    if built:
+        return built
+    raise DatabaseConfigError(
+        "DATABASE_URL is not set and Postgres URL components are missing; "
+        "the api cannot bootstrap without Postgres. Compose should pass "
+        f"{', '.join(_COMPONENT_KEYS)} as raw secrets (the api percent-encodes "
+        "user/password/db when building the URL) or set an explicit DATABASE_URL"
+    )
 
 
 def to_sqlalchemy_url(url: str) -> str:
