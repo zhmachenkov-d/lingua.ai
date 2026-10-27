@@ -30,6 +30,9 @@ RUNS_DIRNAME = "runs"
 
 DEFAULT_MODEL_ID = "auto"
 AGENT_START_MAX_ATTEMPTS = 3
+# Per-call agent limits (0 disables). Kept in sync with LimitsPolicy defaults.
+DEFAULT_AGENT_TIMEOUT_S = 600
+DEFAULT_AGENT_MAX_TOKENS = 2_000_000
 
 log = logging.getLogger("bmad_orchestrate")
 

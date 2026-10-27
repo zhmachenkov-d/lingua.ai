@@ -7,7 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .constants import POLICY_DIRNAME, POLICY_FILENAME, OrchestratorHalt, SHUTDOWN_ERROR
+from .constants import (
+    DEFAULT_AGENT_MAX_TOKENS,
+    DEFAULT_AGENT_TIMEOUT_S,
+    POLICY_DIRNAME,
+    POLICY_FILENAME,
+    OrchestratorHalt,
+    SHUTDOWN_ERROR,
+)
 
 
 @dataclass
@@ -44,6 +51,9 @@ class LimitsPolicy:
     max_dev_attempts: int = 2
     max_review_cycles: int = 3
     max_followup_reviews: int = 1
+    # 0 disables the limit.
+    agent_timeout_s: int = DEFAULT_AGENT_TIMEOUT_S
+    agent_max_tokens: int = DEFAULT_AGENT_MAX_TOKENS
 
 
 @dataclass
@@ -103,6 +113,9 @@ remote = "none"
 max_dev_attempts = 2
 max_review_cycles = 3
 max_followup_reviews = 1
+# 0 disables either limit
+agent_timeout_s = 600
+agent_max_tokens = 2000000
 
 [sweep]
 ledger_name = "deferred-work.md"
@@ -259,6 +272,12 @@ def load_policy(project_root: Path, *, create_if_missing: bool = True) -> Policy
             max_review_cycles=_int(limits_raw, "max_review_cycles", 3, min_value=0),
             max_followup_reviews=_int(
                 limits_raw, "max_followup_reviews", 1, min_value=0
+            ),
+            agent_timeout_s=_int(
+                limits_raw, "agent_timeout_s", DEFAULT_AGENT_TIMEOUT_S, min_value=0
+            ),
+            agent_max_tokens=_int(
+                limits_raw, "agent_max_tokens", DEFAULT_AGENT_MAX_TOKENS, min_value=0
             ),
         ),
         sweep=SweepPolicy(

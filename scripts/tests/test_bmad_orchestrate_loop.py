@@ -15,7 +15,11 @@ if str(SCRIPTS) not in sys.path:
 
 from bmad_orchestrate import pipeline as pipe
 from bmad_orchestrate import scm as scm_mod
-from bmad_orchestrate.agent import AgentRunResult
+from bmad_orchestrate.agent import AgentRunResult, _stream_run_with_limits
+from bmad_orchestrate.constants import (
+    DEFAULT_AGENT_MAX_TOKENS,
+    DEFAULT_AGENT_TIMEOUT_S,
+)
 from bmad_orchestrate.policy import (
     DEFAULT_POLICY_TOML,
     Policy,
@@ -59,6 +63,8 @@ class PolicyTests(unittest.TestCase):
             self.assertEqual(policy.scm.isolation, "worktree")
             self.assertEqual(policy.scm.remote, "none")
             self.assertEqual(policy.limits.max_dev_attempts, 2)
+            self.assertEqual(policy.limits.agent_timeout_s, DEFAULT_AGENT_TIMEOUT_S)
+            self.assertEqual(policy.limits.agent_max_tokens, DEFAULT_AGENT_MAX_TOKENS)
             self.assertEqual(policy.review.trigger, "recommended")
             self.assertEqual(policy.verify.commands, [])
 
@@ -67,10 +73,43 @@ class PolicyTests(unittest.TestCase):
             root = Path(tmp)
             path = ensure_policy_template(root)
             self.assertTrue(path.is_file())
-            self.assertIn("[scm]", path.read_text(encoding="utf-8"))
+            text = path.read_text(encoding="utf-8")
+            self.assertIn("[scm]", text)
+            self.assertIn("agent_timeout_s", text)
+            self.assertIn("agent_max_tokens", text)
             policy = load_policy(root)
             self.assertEqual(policy.scm.merge_strategy, "squash")
             self.assertEqual(policy.effective_max_followup_reviews, 1)
+            self.assertEqual(policy.limits.agent_timeout_s, 600)
+            self.assertEqual(policy.limits.agent_max_tokens, 2_000_000)
+
+    def test_loads_agent_call_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            text = path.read_text(encoding="utf-8")
+            text = text.replace("agent_timeout_s = 600", "agent_timeout_s = 120")
+            text = text.replace(
+                "agent_max_tokens = 2000000", "agent_max_tokens = 50000"
+            )
+            path.write_text(text, encoding="utf-8")
+            policy = load_policy(root, create_if_missing=False)
+            self.assertEqual(policy.limits.agent_timeout_s, 120)
+            self.assertEqual(policy.limits.agent_max_tokens, 50_000)
+
+    def test_rejects_negative_agent_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            path.write_text(
+                DEFAULT_POLICY_TOML.replace(
+                    "agent_timeout_s = 600", "agent_timeout_s = -1"
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Exception) as ctx:
+                load_policy(root, create_if_missing=False)
+            self.assertIn("agent_timeout_s", str(ctx.exception))
 
     def test_rejects_invalid_remote(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -83,6 +122,103 @@ class PolicyTests(unittest.TestCase):
             with self.assertRaises(Exception) as ctx:
                 load_policy(root, create_if_missing=False)
             self.assertIn("remote", str(ctx.exception))
+
+
+class _FakeUsage:
+    def __init__(self, total_tokens: int) -> None:
+        self.input_tokens = total_tokens
+        self.output_tokens = 0
+        self.total_tokens = total_tokens
+        self.cache_read_tokens = 0
+        self.cache_write_tokens = 0
+
+
+class _FakeUsageMessage:
+    type = "usage"
+
+    def __init__(self, total_tokens: int) -> None:
+        self.usage = _FakeUsage(total_tokens)
+
+
+class _FakeResult:
+    def __init__(
+        self, status: str = "finished", usage: _FakeUsage | None = None
+    ) -> None:
+        self.status = status
+        self.usage = usage
+
+
+class _FakeRun:
+    def __init__(
+        self,
+        messages: list[object],
+        *,
+        hang_s: float = 0.0,
+        final_usage: _FakeUsage | None = None,
+    ) -> None:
+        self._messages = messages
+        self._hang_s = hang_s
+        self._cancelled = False
+        self.id = "run-test"
+        self.run_id = "run-test"
+        self.usage = final_usage
+
+    def messages(self):
+        import time as _time
+
+        for msg in self._messages:
+            if self._hang_s > 0:
+                _time.sleep(self._hang_s)
+            yield msg
+
+    def wait(self) -> _FakeResult:
+        return _FakeResult(status="finished", usage=self.usage)
+
+    def cancel(self) -> None:
+        self._cancelled = True
+
+
+class AgentLimitsTests(unittest.TestCase):
+    def test_timeout_cancels_run(self) -> None:
+        class _HangingRun(_FakeRun):
+            def messages(self):
+                import time as _time
+
+                _time.sleep(2.0)
+                if False:  # pragma: no cover
+                    yield None
+
+        hanging = _HangingRun([])
+        outcome = _stream_run_with_limits(hanging, timeout_s=1, max_tokens=0)
+        self.assertEqual(outcome.status, "cancelled")
+        self.assertIn("timed out", outcome.error or "")
+        self.assertTrue(hanging._cancelled)
+
+    def test_token_limit_cancels_mid_stream(self) -> None:
+        run = _FakeRun([_FakeUsageMessage(100)])
+        outcome = _stream_run_with_limits(run, timeout_s=0, max_tokens=50)
+        self.assertEqual(outcome.status, "error")
+        self.assertIn("token limit", outcome.error or "")
+        self.assertTrue(run._cancelled)
+        self.assertIsNotNone(outcome.usage)
+        assert outcome.usage is not None
+        self.assertEqual(outcome.usage.total_tokens, 100)
+
+    def test_token_limit_after_wait(self) -> None:
+        usage = _FakeUsage(200)
+        run = _FakeRun([], final_usage=usage)
+        outcome = _stream_run_with_limits(run, timeout_s=0, max_tokens=150)
+        self.assertEqual(outcome.status, "error")
+        self.assertIn("token limit", outcome.error or "")
+        self.assertTrue(run._cancelled)
+
+    def test_success_under_limits(self) -> None:
+        usage = _FakeUsage(10)
+        run = _FakeRun([_FakeUsageMessage(10)], final_usage=usage)
+        outcome = _stream_run_with_limits(run, timeout_s=5, max_tokens=100)
+        self.assertEqual(outcome.status, "finished")
+        self.assertIsNone(outcome.error)
+        self.assertFalse(run._cancelled)
 
 
 class VerifyTests(unittest.TestCase):
