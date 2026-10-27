@@ -1,8 +1,9 @@
 import { InjectionToken } from '@angular/core';
 
-/** Default: `ws://${hostname}:8000/ws` — override in tests. */
+/** Default: same-origin `/ws` with `wss` when the page is HTTPS — override in tests. */
 export function defaultWsUrl(): string {
-  return `ws://${window.location.hostname}:8000/ws`;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
 }
 
 export const WS_URL = new InjectionToken<string>('WS_URL', {

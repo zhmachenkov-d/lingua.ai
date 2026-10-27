@@ -94,9 +94,10 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 | API liveness (direct)                | http://127.0.0.1:8000/health     |
 | API readiness (DB probe)             | http://127.0.0.1:8000/ready      |
 | API readiness via web proxy          | http://127.0.0.1:4200/api/ready  |
-| API learner WebSocket (Router turns) | ws://127.0.0.1:8000/ws           |
+| API learner WebSocket (via web proxy) | ws://127.0.0.1:4200/ws          |
+| API learner WebSocket (direct)        | ws://127.0.0.1:8000/ws          |
 
-Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped). There is **no** nginx `/ws` proxy — the chat client opens `ws://{hostname}:8000/ws` directly (same host as the page, port 8000). The `web-dev` profile (`ng serve`) likewise has no `/api/` proxy — call `:8000` directly or use host `npm start` with a later Angular proxy config.
+Production `web` nginx proxies `/api/*` → `api:8000/*` (prefix stripped) and upgrades `/ws` → `api:8000/ws`. The chat client opens same-origin `ws[s]://{host}/ws` (scheme from the page). The `web-dev` profile / host `npm start` (`ng serve`) proxies `/ws` to `127.0.0.1:8000` via `apps/web/proxy.conf.json`; there is still no `/api/` proxy under `ng serve` — call `:8000` directly for HTTP.
 
 Default Compose `web` serves a **production** static build (nginx). Source edits under `apps/web` (chat shell, `src/styles/tokens.css`, self-hosted fonts) are not visible until you **rebuild** the `web` image (`docker compose build web`).
 

@@ -1,17 +1,17 @@
 # Web — Lingua AI chat shell
 
-Angular 22 learner UI under `apps/web`. This story ships a **Russian-chrome text-chat shell** (thread + composer + disabled Router CTA row) wired to the api WebSocket at `ws://{hostname}:8000/ws`, with Soft Sage `--lingua-*` tokens on the **primary chat surface only** (FR-15 **T0–T1** chat slice).
+Angular 22 learner UI under `apps/web`. This story ships a **Russian-chrome text-chat shell** (thread + composer + disabled Router CTA row) wired to the api WebSocket at same-origin `/ws` (`ws`/`wss` from the page), with Soft Sage `--lingua-*` tokens on the **primary chat surface only** (FR-15 **T0–T1** chat slice).
 
 **Not claimed:** full FR-15 / SM-8 (Tutor / Vocabulary / Review claim surfaces, theme toggle chrome, empty/refuse checklist beyond chat network-fail / paste-too-long).
 
 ## Local URLs
 
-| Surface                                          | URL                                                          |
-| ------------------------------------------------ | ------------------------------------------------------------ |
-| Chat UI                                          | http://127.0.0.1:4200/                                       |
-| Learner WebSocket (direct; no nginx `/ws` proxy) | `ws://{hostname}:8000/ws` (default `ws://127.0.0.1:8000/ws`) |
+| Surface                                      | URL                                                    |
+| -------------------------------------------- | ------------------------------------------------------ |
+| Chat UI                                      | http://127.0.0.1:4200/                                 |
+| Learner WebSocket (same-origin via nginx/`ng serve` proxy) | `ws://{host}/ws` (e.g. `ws://127.0.0.1:4200/ws`) |
 
-Compose production `web` still proxies `/api/` only — do not expect `/ws` through nginx.
+Compose production `web` nginx proxies `/api/` and upgrades `/ws`. Host/`web-dev` `ng serve` uses `proxy.conf.json` for `/ws` → `127.0.0.1:8000`.
 
 ## Design tokens
 
