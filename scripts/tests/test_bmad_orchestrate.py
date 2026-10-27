@@ -311,5 +311,193 @@ class ProcessTicketResultFallbackTests(unittest.TestCase):
             self.assertIn("Next steps to re-dispatch:", report.format_human())
 
 
+class AheadOfDefaultTests(unittest.TestCase):
+    def test_commits_ahead_equal_tips_is_zero(self) -> None:
+        with (
+            mock.patch.object(orch, "default_branch_tip", return_value="origin/main"),
+            mock.patch.object(
+                orch,
+                "run_git",
+                return_value=mock.Mock(returncode=0, stdout="0\n", stderr=""),
+            ) as run_git,
+        ):
+            self.assertEqual(orch.commits_ahead_of_default(Path("/tmp/repo")), 0)
+            run_git.assert_called_once_with(
+                Path("/tmp/repo"), "rev-list", "--count", "origin/main..HEAD"
+            )
+
+    def test_commits_ahead_divergent_tip(self) -> None:
+        with (
+            mock.patch.object(orch, "default_branch_tip", return_value="main"),
+            mock.patch.object(
+                orch,
+                "run_git",
+                return_value=mock.Mock(returncode=0, stdout="3\n", stderr=""),
+            ),
+        ):
+            self.assertEqual(orch.commits_ahead_of_default(Path("/tmp/repo")), 3)
+
+    def test_commits_ahead_missing_tip_is_zero(self) -> None:
+        with mock.patch.object(orch, "default_branch_tip", return_value=None):
+            self.assertEqual(orch.commits_ahead_of_default(Path("/tmp/repo")), 0)
+
+    def test_has_unpushed_false_on_protected_branch(self) -> None:
+        with mock.patch.object(orch, "current_branch", return_value="main"):
+            self.assertFalse(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
+
+    def test_has_unpushed_true_when_ahead(self) -> None:
+        with (
+            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
+            mock.patch.object(orch, "commits_ahead_of_default", return_value=2),
+        ):
+            self.assertTrue(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
+
+    def test_has_unpushed_false_when_not_ahead(self) -> None:
+        with (
+            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
+            mock.patch.object(orch, "commits_ahead_of_default", return_value=0),
+        ):
+            self.assertFalse(orch.has_unpushed_or_new_commits(Path("/tmp/repo")))
+
+
+class EnsurePushAndPrEmptyDiffTests(unittest.TestCase):
+    def test_skips_push_and_pr_when_not_ahead(self) -> None:
+        with (
+            mock.patch.object(orch, "current_branch", return_value="bmad/work"),
+            mock.patch.object(orch, "commits_ahead_of_default", return_value=0),
+            mock.patch.object(orch, "default_branch", return_value="main"),
+            mock.patch.object(orch.subprocess, "run") as sp_run,
+        ):
+            url = orch.ensure_push_and_pr(
+                Path("/tmp/repo"),
+                epic="epic-x",
+                refs=["retrospective:epic-x"],
+                no_push=False,
+                dry_run=False,
+                kind="retrospective",
+            )
+        self.assertIsNone(url)
+        sp_run.assert_not_called()
+
+
+class RunRetrospectiveEmptyDiffTests(unittest.TestCase):
+    def test_done_without_pr_when_no_commits_ahead(self) -> None:
+        report = orch.RunReport()
+        agent = mock.Mock(
+            error=None,
+            usage=None,
+            agent_id="agent-retro",
+            run_id="run-retro",
+        )
+        with (
+            mock.patch.object(orch, "require_clean_tree"),
+            mock.patch.object(orch, "checkout_work_branch"),
+            mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+            mock.patch.object(
+                orch, "has_unpushed_or_new_commits", return_value=False
+            ) as ahead,
+            mock.patch.object(orch, "ensure_push_pr_and_merge") as push_merge,
+        ):
+            orch.run_retrospective(
+                project_root=Path("/tmp/repo"),
+                epic="epic-platform-foundation",
+                report=report,
+                model="auto",
+                dry_run=False,
+                no_push=False,
+            )
+        ahead.assert_called_once()
+        push_merge.assert_not_called()
+        self.assertEqual(len(report.units), 1)
+        unit = report.units[0]
+        self.assertEqual(unit.kind, "retrospective")
+        self.assertEqual(unit.outcome, "done")
+        self.assertIsNone(unit.pr_url)
+
+    def test_pushes_when_ahead(self) -> None:
+        report = orch.RunReport()
+        agent = mock.Mock(
+            error=None,
+            usage=None,
+            agent_id="agent-retro",
+            run_id="run-retro",
+        )
+        with (
+            mock.patch.object(orch, "require_clean_tree"),
+            mock.patch.object(orch, "checkout_work_branch"),
+            mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+            mock.patch.object(orch, "has_unpushed_or_new_commits", return_value=True),
+            mock.patch.object(
+                orch, "ensure_push_pr_and_merge", return_value="https://example/pr/1"
+            ) as push_merge,
+        ):
+            orch.run_retrospective(
+                project_root=Path("/tmp/repo"),
+                epic="epic-platform-foundation",
+                report=report,
+                model="auto",
+                dry_run=False,
+                no_push=False,
+            )
+        push_merge.assert_called_once()
+        self.assertEqual(report.units[-1].pr_url, "https://example/pr/1")
+
+
+class ProcessTicketPushGateTests(unittest.TestCase):
+    def test_pushes_when_ahead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slug = "bug-x"
+            ref = f"{slug}.md"
+            plan_path = root / "_bmad-output" / "backlog" / f"{slug}-plan.md"
+            plan_path.parent.mkdir(parents=True)
+            plan_path.write_text(
+                "---\nstatus: built\nfollowup_review_recommended: false\ndeferred: []\n---\n",
+                encoding="utf-8",
+            )
+            report = orch.RunReport()
+            agent = mock.Mock(
+                error=None,
+                usage=None,
+                agent_id="agent-1",
+                run_id="run-1",
+            )
+            found = {
+                "ref": ref,
+                "plan": str(plan_path),
+                "tracker_id": "",
+                "type": "bug",
+                "title": "x",
+                "plan_checkpoint": False,
+                "done_checkpoint": False,
+            }
+            with (
+                mock.patch.object(orch, "tickets_find", return_value=found),
+                mock.patch.object(orch, "require_clean_tree"),
+                mock.patch.object(orch, "checkout_work_branch"),
+                mock.patch.object(orch, "run_cursor_agent", return_value=agent),
+                mock.patch.object(orch, "tickets_mark_done"),
+                mock.patch.object(
+                    orch, "has_unpushed_or_new_commits", return_value=True
+                ),
+                mock.patch.object(
+                    orch,
+                    "ensure_push_pr_and_merge",
+                    return_value="https://example/pr/9",
+                ) as push_merge,
+                mock.patch.object(orch, "epic_fully_done", return_value=False),
+            ):
+                orch.process_ticket(
+                    project_root=root,
+                    ref=ref,
+                    report=report,
+                    model="auto",
+                    dry_run=False,
+                    no_push=False,
+                )
+            push_merge.assert_called_once()
+            self.assertEqual(report.units[-1].pr_url, "https://example/pr/9")
+
+
 if __name__ == "__main__":
     unittest.main()
