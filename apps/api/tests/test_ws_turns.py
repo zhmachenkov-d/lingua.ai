@@ -17,6 +17,7 @@ from app.llm.adapter import (
 )
 from app.main import app
 from app.router.turn import CTA_MESSAGE, CTAS, TurnError, TurnSuccess, handle_turn
+from app.schemas.ws import MAX_TURN_TEXT_LENGTH
 from fastapi.testclient import TestClient
 from starlette.testclient import WebSocketDenialResponse
 
@@ -267,8 +268,21 @@ def test_invalid_inbound_does_not_call_llm(client: TestClient) -> None:
     assert event["code"] == "invalid_turn_request"
 
 
+def test_parse_inbound_uses_turn_request_model() -> None:
+    with patch.object(
+        ws_mod.TurnRequest,
+        "model_validate",
+        wraps=ws_mod.TurnRequest.model_validate,
+    ) as validate:
+        result = ws_mod._parse_inbound(
+            '{"kind":"turn_request","text":"hi","turn_id":"t"}'
+        )
+    validate.assert_called_once()
+    assert result == ("hi", "t")
+
+
 def test_over_limit_text_rejected_without_llm(client: TestClient) -> None:
-    over = "x" * (ws_mod.MAX_TURN_TEXT_LENGTH + 1)
+    over = "x" * (MAX_TURN_TEXT_LENGTH + 1)
     with patch("app.api.routes.ws.handle_turn", new_callable=AsyncMock) as mocked:
         with client.websocket_connect("/ws") as ws:
             ws.send_json({"kind": "turn_request", "text": over, "turn_id": "too-long"})
@@ -280,7 +294,7 @@ def test_over_limit_text_rejected_without_llm(client: TestClient) -> None:
 
 
 def test_at_limit_text_follows_turn_path(client: TestClient) -> None:
-    at_limit = "y" * ws_mod.MAX_TURN_TEXT_LENGTH
+    at_limit = "y" * MAX_TURN_TEXT_LENGTH
     with patch(
         "app.api.routes.ws.handle_turn",
         new_callable=AsyncMock,
