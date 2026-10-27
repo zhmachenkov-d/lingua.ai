@@ -7,7 +7,8 @@ agents must not invent CEFR.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,12 +25,18 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 @router.get("/cefr")
 async def get_cefr(session: SessionDep) -> dict[str, str]:
-    """Return the bare CEFR map. No row yet → empty map (no insert)."""
+    """Return the bare CEFR map. No row yet → empty map (no insert).
+
+    Stored JSONB is re-validated through ``CefrBySkill``; illegal maps yield 422.
+    """
     profile = await session.get(LearnerProfile, MVP_LEARNER_ID)
     if profile is None:
         return {}
     raw = profile.cefr_by_skill or {}
-    return {str(k): str(v) for k, v in raw.items()}
+    try:
+        return CefrBySkill.model_validate(raw).to_stored_map()
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
 @router.put("/cefr", status_code=204)
