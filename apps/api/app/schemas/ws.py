@@ -1,5 +1,9 @@
 """AD-6 WebSocket turn envelopes (field extras; kinds are closed)."""
 
+from __future__ import annotations
+
+import json
+from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
@@ -14,8 +18,41 @@ ErrorCode = Literal[
     "ws_already_open",
 ]
 
-# Align with apps/web MAX_MESSAGE_LENGTH (chat.copy.ts).
-MAX_TURN_TEXT_LENGTH = 2000
+_SOT_NAME = "max-turn-text-length.json"
+
+
+def _load_max_turn_text_length() -> int:
+    """Load shared SoT (web chat JSON; Docker copies it under /app/contracts)."""
+    here = Path(__file__).resolve()
+    candidates = (
+        # Monorepo: apps/api/app/schemas → repo root
+        here.parents[4]
+        / "apps"
+        / "web"
+        / "src"
+        / "app"
+        / "chat"
+        / _SOT_NAME,
+        # Api image: /app/app/schemas → /app/contracts
+        here.parents[2] / "contracts" / _SOT_NAME,
+    )
+    for path in candidates:
+        if not path.is_file():
+            continue
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        value = raw["maxTurnTextLength"]
+        if type(value) is not int:
+            raise TypeError(
+                f"maxTurnTextLength in {path} must be an int, got {type(value).__name__}"
+            )
+        return value
+    raise FileNotFoundError(
+        f"{_SOT_NAME} not found; tried: "
+        + ", ".join(str(p) for p in candidates)
+    )
+
+
+MAX_TURN_TEXT_LENGTH = _load_max_turn_text_length()
 
 
 def _coerce_optional_str(value: object) -> str | None:

@@ -1,0 +1,21 @@
+# Api Compose build context is the repo root (needs the web SoT JSON).
+.git
+.env
+**/node_modules
+**/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.angular
+**/dist
+apps/api/tests
+apps/api/*.egg-info
+apps/api/.venv
+*.md
+.cursor
+_bmad
+_bmad-output
+.textbooks
+textbooks
