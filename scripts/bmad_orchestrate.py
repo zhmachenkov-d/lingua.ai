@@ -21,6 +21,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
 import urllib.error
 import urllib.parse
@@ -992,6 +993,22 @@ def ensure_push_and_pr(
 
 # --------------------------------------------------------------------------- Cursor agent
 
+# API id for Cursor Auto; "auto-smart" is not a valid models.list() id on current keys.
+DEFAULT_MODEL_ID = "auto"
+AGENT_START_MAX_ATTEMPTS = 3
+_AGENT_TEXT_CAP = 200
+
+_ANSI = {
+    "reset": "\033[0m",
+    "dim": "\033[2m",
+    "white": "\033[97m",
+    "cyan": "\033[36m",
+    "yellow": "\033[33m",
+    "green": "\033[32m",
+    "red": "\033[31m",
+    "blue": "\033[34m",
+}
+
 
 @dataclass
 class AgentRunResult:
@@ -1000,6 +1017,139 @@ class AgentRunResult:
     agent_id: str | None
     run_id: str | None
     error: str | None = None
+
+
+def resolve_agent_model(model: str) -> Any:
+    from cursor_sdk import ModelParameterValue, ModelSelection
+
+    # Accept legacy/alias "auto-smart" as the Auto + balanced selection.
+    if model in {DEFAULT_MODEL_ID, "auto-smart"}:
+        return ModelSelection(
+            id="auto",
+            params=[ModelParameterValue(id="optimize_for", value="balanced")],
+        )
+    return model
+
+
+def _agent_color_enabled() -> bool:
+    return sys.stderr.isatty() and not os.environ.get("NO_COLOR")
+
+
+def _paint(style: str, text: str) -> str:
+    if not _agent_color_enabled():
+        return text
+    code = _ANSI.get(style, "")
+    if not code:
+        return text
+    return f"{code}{text}{_ANSI['reset']}"
+
+
+def _truncate(text: str, cap: int = _AGENT_TEXT_CAP) -> str:
+    text = text.replace("\n", " ").strip()
+    if len(text) <= cap:
+        return text
+    return text[: cap - 1] + "…"
+
+
+def _short_payload(value: Any, cap: int = _AGENT_TEXT_CAP) -> str:
+    if value is None:
+        return ""
+    try:
+        raw = json.dumps(value, ensure_ascii=False, default=str)
+    except TypeError:
+        raw = str(value)
+    return _truncate(raw, cap)
+
+
+def _emit_agent_line(kind: str, text: str) -> None:
+    style = {
+        "assistant": "white",
+        "thinking": "cyan",
+        "tool_running": "yellow",
+        "tool_completed": "green",
+        "tool_error": "red",
+        "status": "blue",
+        "task": "blue",
+    }.get(kind, "")
+    prefix = _paint("dim", "agent |")
+    body = _paint(style, text) if style else text
+    print(f"{prefix} {body}", file=sys.stderr, flush=True)
+
+
+def _emit_agent_message(message: Any) -> None:
+    msg_type = getattr(message, "type", None)
+    if msg_type == "assistant":
+        content = getattr(getattr(message, "message", None), "content", None) or ()
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                text = getattr(block, "text", "") or ""
+                if text:
+                    _emit_agent_line("assistant", text)
+        return
+    if msg_type == "thinking":
+        text = getattr(message, "text", "") or ""
+        if text:
+            _emit_agent_line("thinking", f"thinking: {_truncate(text)}")
+        return
+    if msg_type == "tool_call":
+        name = getattr(message, "name", "") or "tool"
+        status = str(getattr(message, "status", "") or "")
+        kind = {
+            "running": "tool_running",
+            "completed": "tool_completed",
+            "error": "tool_error",
+        }.get(status, "tool_running")
+        parts = [f"tool {name}"]
+        if status:
+            parts.append(f"[{status}]")
+        args = _short_payload(getattr(message, "args", None))
+        if args:
+            parts.append(f"args={args}")
+        if status in {"completed", "error"}:
+            result = _short_payload(getattr(message, "result", None))
+            if result:
+                parts.append(f"result={result}")
+        _emit_agent_line(kind, " ".join(parts))
+        return
+    if msg_type == "status":
+        status = getattr(message, "status", "") or ""
+        detail = getattr(message, "message", "") or ""
+        line = f"status: {status}"
+        if detail:
+            line = f"{line} {detail}"
+        _emit_agent_line("status", line.strip())
+        return
+    if msg_type == "task":
+        status = getattr(message, "status", "") or ""
+        text = getattr(message, "text", "") or ""
+        line = f"task: {status}"
+        if text:
+            line = f"{line} {text}"
+        _emit_agent_line("task", line.strip())
+
+
+def _soft_close_agent(agent: Any, err_type: type[BaseException]) -> None:
+    if agent is None:
+        return
+    try:
+        agent.close()
+    except err_type as close_err:
+        log.warning(
+            "agent close failed: %s",
+            getattr(close_err, "message", None) or close_err,
+        )
+    except Exception as close_err:  # noqa: BLE001 — never mask primary halt
+        log.warning("agent close failed: %s", close_err)
+
+
+def _retry_delay(err: Any, attempt: int) -> float:
+    raw = getattr(err, "retry_after", None)
+    if raw is not None:
+        try:
+            return max(0.0, float(raw))
+        except (TypeError, ValueError):
+            pass
+    return float(min(2 ** (attempt - 1), 2))
 
 
 def run_cursor_agent(
@@ -1019,18 +1169,35 @@ def run_cursor_agent(
 
     from cursor_sdk import Agent, CursorAgentError, LocalAgentOptions
 
+    resolved_model = resolve_agent_model(model)
     log.info("agent start model=%s", model)
-    try:
-        with Agent.create(
-            model=model,
-            api_key=api_key,
-            local=LocalAgentOptions(cwd=str(project_root), setting_sources=["project"]),
-        ) as agent:
+
+    for attempt in range(1, AGENT_START_MAX_ATTEMPTS + 1):
+        agent: Any = None
+        phase = "create"
+        try:
+            agent = Agent.create(
+                model=resolved_model,
+                api_key=api_key,
+                local=LocalAgentOptions(
+                    cwd=str(project_root), setting_sources=["project"]
+                ),
+            )
             agent_id = getattr(agent, "agent_id", None) or getattr(
                 agent, "agentId", None
             )
+            log.info("agent created agent_id=%s", agent_id)
+
+            phase = "send"
             run = agent.send(prompt)
-            run_id = getattr(run, "id", None)
+            run_id = getattr(run, "run_id", None) or getattr(run, "id", None)
+            log.info("agent sent agent_id=%s run_id=%s", agent_id, run_id)
+
+            phase = "stream"
+            for message in run.messages():
+                _emit_agent_message(message)
+
+            phase = "wait"
             result = run.wait()
             usage = None
             raw_usage = getattr(result, "usage", None) or getattr(run, "usage", None)
@@ -1060,11 +1227,40 @@ def run_cursor_agent(
                 run_id=str(run_id) if run_id else None,
                 error=err,
             )
-    except CursorAgentError as err:
-        raise OrchestratorHalt(
-            SHUTDOWN_ERROR,
-            f"Cursor agent startup failed: {err.message} (retryable={err.is_retryable})",
-        ) from err
+        except KeyboardInterrupt as err:
+            _soft_close_agent(agent, CursorAgentError)
+            agent = None
+            raise OrchestratorHalt(
+                SHUTDOWN_ERROR, f"interrupted during agent {phase}"
+            ) from err
+        except CursorAgentError as err:
+            _soft_close_agent(agent, CursorAgentError)
+            agent = None
+            if (
+                phase in {"create", "send"}
+                and err.is_retryable
+                and attempt < AGENT_START_MAX_ATTEMPTS
+            ):
+                delay = _retry_delay(err, attempt)
+                log.warning(
+                    "agent retry attempt=%s/%s phase=%s after=%ss detail=%s",
+                    attempt + 1,
+                    AGENT_START_MAX_ATTEMPTS,
+                    phase,
+                    delay,
+                    err.message,
+                )
+                time.sleep(delay)
+                continue
+            raise OrchestratorHalt(
+                SHUTDOWN_ERROR,
+                f"Cursor agent {phase} failed: {err.message} "
+                f"(retryable={err.is_retryable})",
+            ) from err
+        finally:
+            _soft_close_agent(agent, CursorAgentError)
+
+    raise OrchestratorHalt(SHUTDOWN_ERROR, "Cursor agent create/send retries exhausted")
 
 
 def usage_dict(usage: TokenUsage | None) -> dict[str, int] | None:
@@ -1526,8 +1722,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     p.add_argument(
         "--model",
-        default="composer-2.5",
-        help="Cursor model id (default: composer-2.5)",
+        default=DEFAULT_MODEL_ID,
+        help="Cursor model id (default: auto with optimize_for=balanced)",
     )
     p.add_argument(
         "--project-root", default=None, help="project root containing _bmad/"
