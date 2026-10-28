@@ -34,7 +34,7 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
-# Path layout mirrors the monorepo so pyproject path-dep ../../packages/lingua_ids resolves.
+# Path dep is resolved by uv locally; Docker installs the shared package explicitly.
 COPY packages/lingua_ids /packages/lingua_ids
 COPY apps/ingest/pyproject.toml ./
 COPY apps/ingest/app ./app
@@ -52,3 +52,5 @@ RUN pip install --no-cache-dir \
     "psutil==7.2.2" \
  && pip install --no-cache-dir --no-deps /packages/lingua_ids \
  && pip install --no-cache-dir --no-deps .
+
+CMD ["python", "main.py"]
