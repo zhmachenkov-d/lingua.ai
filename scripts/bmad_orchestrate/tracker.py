@@ -1,4 +1,5 @@
 """External tracker store adapters (GitHub/Jira/Linear/Notion/Trello)."""
+
 from __future__ import annotations
 
 import json
@@ -21,6 +22,7 @@ from .constants import (
     OrchestratorHalt,
     log,
 )
+
 
 def _merge_toml(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
     out = dict(base)
@@ -382,6 +384,8 @@ def tracker_mark_done(
         )
     log.info("tracker mark-done store=%s ref=%s tracker_id=%s", store, ref, tid)
     handler(project_root, tracker_id=tid, cfg=cfg)
+    from .tickets_io import tickets_mirror
+
     tickets_mirror(
         project_root,
         [{"ref": ref, "tracker_id": tid, "tracker_status": "done"}],
