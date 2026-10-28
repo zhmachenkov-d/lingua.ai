@@ -1,0 +1,40 @@
+# Project overlay — keep in sync with upstream bmad_loop/data/profiles/cursor-agent.toml
+# until this project upgrades to a bmad-loop release that ships cursor-agent.
+#
+# Cursor Agent CLI (`agent`). `--print` / `--trust` / `--approve-mcps` in launch_args;
+# `--force` in bypass_args. Hook dialect is flat `.cursor/hooks.json` v1.
+# sessionEnd -> Stop (camelCase `stop` does not fire on --print turns).
+# usage_parser "none": transcript has no token fields.
+name = "cursor-agent"
+binary = "agent"
+prompt_template = "{prompt}"
+launch_args = ["--print", "--trust", "--approve-mcps"]
+bypass_args = ["--force"]
+model_flag = "--model"
+session_id_flag = "--resume"
+usage_parser = "none"
+first_run_note = "run `agent login` once (or set CURSOR_API_KEY) if needed; hooks: `bmad-loop init --cli cursor-agent` (writes .cursor/hooks.json). Every launch passes --print --trust --approve-mcps --force so trust/MCP/permission dialogs should not block spawned sessions."
+skill_tree = ".agents/skills"
+seed_files = [".cursor/hooks.json", ".cursor/mcp.json"]
+
+env_fault_patterns = []
+
+parked_prompt_patterns = []
+
+usage_limit_patterns = []
+usage_wait_patterns = []
+
+auto_deny_patterns = []
+
+[parked_answers]
+approve = ["Enter"]
+deny = ["Escape"]
+approve_guard = ['Do you want to procee[d]\?', '❯ 1[.] Yes']
+deny_guard = ['Do you want to procee[d]\?']
+
+[hooks]
+dialect = "cursor-hooks-json"
+config_path = ".cursor/hooks.json"
+events = { sessionStart = "SessionStart", sessionEnd = "Stop" }
+
+platforms = ["linux", "darwin"]
