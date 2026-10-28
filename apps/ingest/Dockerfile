@@ -34,9 +34,11 @@ RUN apt-get update \
  && apt-get autoremove -y \
  && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
-COPY app ./app
-COPY main.py ./
+# Path layout mirrors the monorepo so pyproject path-dep ../../packages/lingua_ids resolves.
+COPY packages/lingua_ids /packages/lingua_ids
+COPY apps/ingest/pyproject.toml ./
+COPY apps/ingest/app ./app
+COPY apps/ingest/main.py ./
 
 # Resolve runtime deps with PyTorch CPU as primary index so torch stays CPU;
 # then install this package without re-resolving deps (avoids PyPI CUDA torch).
@@ -48,6 +50,5 @@ RUN pip install --no-cache-dir \
     "marker-pdf==2.0.0" \
     "pymupdf==1.28.2" \
     "psutil==7.2.2" \
+ && pip install --no-cache-dir --no-deps /packages/lingua_ids \
  && pip install --no-cache-dir --no-deps .
-
-CMD ["python", "main.py"]

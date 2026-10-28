@@ -8,9 +8,11 @@ derived from the book contents listing and spot-checked against ocrmypdf text
 
 from __future__ import annotations
 
+from lingua_ids import EF4_BEG_SB_ID
+
 from app.units.span import UnitSpan
 
-TEXTBOOK_ID = "ef4-beg-sb"
+TEXTBOOK_ID = EF4_BEG_SB_ID
 
 # (code, title, page_start_0based) — ordered by start page.
 _STARTS: tuple[tuple[str, str, int], ...] = (

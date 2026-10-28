@@ -1,0 +1,14 @@
+[project]
+name = "lingua-ids"
+version = "0.1.0"
+description = "Shared MVP textbook_id string constants for api and ingest"
+requires-python = ">=3.13"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lingua_ids*"]

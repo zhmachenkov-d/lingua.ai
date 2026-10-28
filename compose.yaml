@@ -84,7 +84,8 @@ services:
   ingest:
     profiles: [ingest]
     build:
-      context: ./apps/ingest
+      context: .
+      dockerfile: apps/ingest/Dockerfile
       network: host
     environment:
       TEXTBOOKS_DIR: /textbooks

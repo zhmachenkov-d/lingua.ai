@@ -92,7 +92,8 @@ services:
   ingest:
     profiles: [ingest]
     build:
-      context: ./apps/ingest
+      context: .
+      dockerfile: apps/ingest/Dockerfile
       network: host
     network_mode: host
     environment:
