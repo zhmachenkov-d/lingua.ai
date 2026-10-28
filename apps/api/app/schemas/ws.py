@@ -27,15 +27,7 @@ def _sot_candidates(here: Path) -> list[Path]:
     out: list[Path] = []
     # Monorepo: apps/api/app/schemas → repo root (needs parents[4])
     if len(parents) > 4:
-        out.append(
-            parents[4]
-            / "apps"
-            / "web"
-            / "src"
-            / "app"
-            / "chat"
-            / _SOT_NAME
-        )
+        out.append(parents[4] / "apps" / "web" / "src" / "app" / "chat" / _SOT_NAME)
     # Api image: /app/app/schemas → /app/contracts (needs parents[2])
     if len(parents) > 2:
         out.append(parents[2] / "contracts" / _SOT_NAME)
@@ -53,7 +45,8 @@ def _load_max_turn_text_length() -> int:
         value = raw["maxTurnTextLength"]
         if type(value) is not int:
             raise TypeError(
-                f"maxTurnTextLength in {path} must be an int, got {type(value).__name__}"
+                "maxTurnTextLength in "
+                f"{path} must be an int, got {type(value).__name__}"
             )
         return value
     raise FileNotFoundError(

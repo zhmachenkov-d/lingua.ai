@@ -1,6 +1,6 @@
 # lingua.ai — Compose stack skeleton
 
-Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sage tokens — chat surface T0–T1 only; **not** FR-15 / SM-8 complete), FastAPI `api`, Postgres+pgvector `db`, and an optional `ingest` job stub.
+Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sage tokens — chat surface T0–T1 only; **not** FR-15 / SM-8 complete), FastAPI `api`, Postgres+pgvector `db`, and an optional `ingest` Marker CPU spike job.
 
 ## Prerequisites
 
@@ -205,12 +205,14 @@ npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 
 **CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
 
-### Ingest job stub
+### Ingest Marker CPU spike
 
-Startable without `db`. Logs one start line and exits 0 (no Ready pipeline yet):
+Startable without `db` (Compose profile `ingest`). Mounts gitignored `textbooks/` read-only and prints one JSON metrics object per Students’ Book / Workbook PDF (`status` `ok` | `fallback` | `parse_failed`). Image ships pinned CPU `llama-server` for Marker/Surya. Missing required PDF → non-zero exit + path on stderr. Does **not** mint Ready units or write the spike note — owner HITL fills `_bmad-output/.../spike-marker-compose-cpu-spike-note.md`.
 
 ```bash
 docker compose --profile ingest run --rm ingest
+# nested Docker:
+docker compose -f compose.dev.yaml --profile ingest run --rm ingest
 ```
 
 ## Layout
@@ -221,5 +223,5 @@ compose.dev.yaml   # nested-Docker host-network alternative
 apps/
   api/      # FastAPI + /health + /ready + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
   web/      # Angular 22.2.x chat shell + Soft Sage tokens (T0–T1; + nginx.dev.conf for host stack)
-  ingest/   # job-profile stub
+  ingest/   # Marker Compose CPU spike job (profile ingest)
 ```

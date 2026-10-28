@@ -5,8 +5,7 @@ import maxTurnTextLengthSot from './max-turn-text-length.json';
 export const PASTE_TOO_LONG = 'Слишком длинное сообщение. Сократи текст.';
 export const NETWORK_FAIL = 'Нет связи. Проверь интернет и попробуй снова.';
 /** Singleton /ws conflict — distinct from NETWORK_FAIL (api down / outage). */
-export const WS_ALREADY_OPEN =
-  'Чат уже открыт в другой вкладке. Закрой его и нажми «Повторить».';
+export const WS_ALREADY_OPEN = 'Чат уже открыт в другой вкладке. Закрой его и нажми «Повторить».';
 export const UNPARSEABLE_FRAME = 'Не удалось обработать ответ сервера. Попробуй ещё раз.';
 export const RETRY_LABEL = 'Повторить';
 export const SOON_LABEL = 'Скоро';
