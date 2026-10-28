@@ -11,6 +11,11 @@ dependencies = [
   "torch",
   "torchvision",
   "lingua-ids",
+  # Corpus Ready tracer (story 2.3) — pin recorded in plan Implementation Notes.
+  "sqlalchemy[asyncio]>=2,<3",
+  "psycopg[binary]>=3.2",
+  "pgvector>=0.4,<0.5",
+  "FlagEmbedding==1.4.2",
 ]
 
 [project.optional-dependencies]

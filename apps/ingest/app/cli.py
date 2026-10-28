@@ -4,13 +4,29 @@ import json
 import logging
 import os
 import sys
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TextIO
 
+from app.chunk import split_paragraphs
+from app.embed import BgeM3Embedder, Embedder
+from app.gate import evaluate_hard_gate
 from app.parse.pipeline import parse_pdf
 from app.parse.protocol import ParseAdapter
 from app.parse.result import METRIC_JSON_KEYS, ParseResult
 from app.parse.rss import PeakRssTracker
+from app.persist import (
+    CorpusSchemaMissing,
+    DatabaseConfigError,
+    ensure_corpus_schema,
+    session_factory,
+    smoke_select_unit,
+    upsert_not_ready_unit,
+    upsert_ready_unit,
+)
+from app.units import EF4_BEG_SB_ID, extract_unit_text, list_units
+from app.units.span import UnitSpan
 
 logger = logging.getLogger(__name__)
 
@@ -19,9 +35,20 @@ DEFAULT_PDF_NAMES: tuple[str, ...] = (
     "English_File_4th_edition_Beginner_Workbook.pdf",
 )
 
+SB_PDF_NAME = DEFAULT_PDF_NAMES[0]
+
+ExtractFn = Callable[[Path, UnitSpan], str]
+
 
 def textbooks_dir() -> Path:
     return Path(os.environ.get("TEXTBOOKS_DIR", "/textbooks"))
+
+
+def ingest_mode() -> str:
+    raw = os.environ.get("INGEST_MODE", "tracer").strip().lower() or "tracer"
+    if raw not in {"tracer", "metrics"}:
+        raise ValueError(f"Unknown INGEST_MODE={raw!r}; expected tracer or metrics")
+    return raw
 
 
 def _default_primary_adapter() -> ParseAdapter:
@@ -144,11 +171,224 @@ def run_metrics_job(
     return 0
 
 
+def _ensure_ocr_cache_dir() -> Path | None:
+    """Prefer OCR_CACHE_DIR so searchable PDF survives for unit slicing."""
+    env = os.environ.get("OCR_CACHE_DIR", "").strip()
+    if env:
+        path = Path(env)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return None
+
+
+def _searchable_pdf_for_units(
+    primary: ParseAdapter,
+    source_pdf: Path,
+    *,
+    job_cache: Path | None,
+) -> Path:
+    cached = getattr(primary, "last_searchable_pdf", None)
+    if isinstance(cached, Path) and cached.is_file():
+        return cached
+    if job_cache is not None:
+        candidate = job_cache / f"{source_pdf.stem}_ocr.pdf"
+        if candidate.is_file():
+            return candidate
+    return source_pdf
+
+
+def run_tracer_job(
+    *,
+    textbooks: Path | None = None,
+    sb_pdf_name: str = SB_PDF_NAME,
+    primary: ParseAdapter | None = None,
+    fallback: ParseAdapter | None = None,
+    embedder: Embedder | None = None,
+    extract_fn: ExtractFn | None = None,
+    database_url: str | None = None,
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+) -> int:
+    """OCR SB → map units → hard gate → chunk/embed → first Ready. SB PDF only."""
+    out = stdout if stdout is not None else sys.stdout
+    err = stderr if stderr is not None else sys.stderr
+    if textbooks is None:
+        textbooks = textbooks_dir()
+    if fallback is None:
+        from app.parse.pymupdf_text import PyMuPDFTextAdapter
+
+        fallback = PyMuPDFTextAdapter()
+    if extract_fn is None:
+        extract_fn = extract_unit_text
+    if embedder is None:
+        embedder = BgeM3Embedder()
+
+    present, missing = resolve_required_pdfs(textbooks, (sb_pdf_name,))
+    if missing:
+        for path in missing:
+            print(f"missing required PDF: {path}", file=err)
+        return 1
+    pdf_path = present[0]
+
+    # Keep a searchable OCR PDF for unit slicing (Compose sets OCR_CACHE_DIR).
+    cache = _ensure_ocr_cache_dir()
+    tmp_ctx = None
+    if cache is None:
+        tmp_ctx = tempfile.TemporaryDirectory(prefix="lingua-tracer-ocr-")
+        cache = Path(tmp_ctx.name)
+        os.environ["OCR_CACHE_DIR"] = str(cache)
+
+    if primary is None:
+        primary = _default_primary_adapter()
+
+    try:
+        try:
+            engine, SessionLocal = session_factory(database_url)
+        except DatabaseConfigError as exc:
+            print(f"database config error: {exc}", file=err)
+            return 1
+
+        try:
+            with SessionLocal() as session:
+                try:
+                    ensure_corpus_schema(session)
+                except CorpusSchemaMissing as exc:
+                    print(str(exc), file=err)
+                    return 1
+
+            logger.info("Tracer parsing %s via %s", pdf_path.name, primary.adapter_id)
+            parse_result = parse_pdf(pdf_path, primary=primary, fallback=fallback)
+            searchable = _searchable_pdf_for_units(primary, pdf_path, job_cache=cache)
+
+            units = list_units(EF4_BEG_SB_ID)
+            ready_ref: str | None = None
+
+            # Warm-load BGE-M3 outside the unit-write session (download/load can be slow).
+            warm = getattr(embedder, "_load", None)
+            if callable(warm):
+                warm()
+
+            with SessionLocal() as session:
+                for span in units:
+                    try:
+                        unit_text = extract_fn(searchable, span)
+                    except Exception as exc:
+                        logger.warning(
+                            "Unit extract failed for %s: %s", span.unit_ref, exc
+                        )
+                        unit_text = ""
+
+                    gate = evaluate_hard_gate(
+                        unit_text,
+                        page_count=span.page_count,
+                        pdf_path=pdf_path,
+                    )
+
+                    # Text-layer / failed parse is never a silent Ready path.
+                    if parse_result.status != "ok":
+                        metrics = dict(gate.gate_metrics)
+                        metrics["parse_status"] = parse_result.status
+                        upsert_not_ready_unit(
+                            session,
+                            textbook_id=span.textbook_id,
+                            unit_ref=span.unit_ref,
+                            gate_reason=parse_result.status,
+                            gate_metrics=metrics,
+                        )
+                        session.commit()
+                        logger.info(
+                            "NotReady %s reason=%s",
+                            span.unit_ref,
+                            parse_result.status,
+                        )
+                        continue
+
+                    if not gate.passed:
+                        upsert_not_ready_unit(
+                            session,
+                            textbook_id=span.textbook_id,
+                            unit_ref=span.unit_ref,
+                            gate_reason=gate.gate_reason or "structure_zero",
+                            gate_metrics=gate.gate_metrics,
+                        )
+                        session.commit()
+                        logger.info(
+                            "NotReady %s reason=%s",
+                            span.unit_ref,
+                            gate.gate_reason,
+                        )
+                        continue
+
+                    chunks = split_paragraphs(unit_text)
+                    non_empty = [c for c in chunks if c.strip()]
+                    if not non_empty:
+                        metrics = dict(gate.gate_metrics)
+                        metrics["structure_zero"] = True
+                        metrics["chunk_count"] = 0
+                        upsert_not_ready_unit(
+                            session,
+                            textbook_id=span.textbook_id,
+                            unit_ref=span.unit_ref,
+                            gate_reason="structure_zero",
+                            gate_metrics=metrics,
+                        )
+                        session.commit()
+                        continue
+
+                    vectors = embedder.embed(non_empty)
+                    upsert_ready_unit(
+                        session,
+                        textbook_id=span.textbook_id,
+                        unit_ref=span.unit_ref,
+                        gate_metrics=gate.gate_metrics,
+                        chunk_texts=non_empty,
+                        embeddings=vectors,
+                        model_name=embedder.model_name,
+                        dims=embedder.dims,
+                    )
+                    session.commit()
+                    ready_ref = span.unit_ref
+                    smoke = smoke_select_unit(session, ready_ref)
+                    payload = {
+                        "mode": "tracer",
+                        "unit_ref": ready_ref,
+                        "status": "Ready",
+                        "gate_metrics": gate.gate_metrics,
+                        "smoke": None
+                        if smoke is None
+                        else {
+                            "unit_ref": smoke.unit_ref,
+                            "status": smoke.status,
+                            "dims": smoke.dims,
+                            "model_name": smoke.model_name,
+                        },
+                    }
+                    print(json.dumps(payload, ensure_ascii=False), file=out, flush=True)
+                    logger.info("Ready %s — stopping after first Ready unit", ready_ref)
+                    break
+
+            if ready_ref is None:
+                print(
+                    "tracer exhausted unit map with zero Ready units",
+                    file=err,
+                )
+                return 1
+            return 0
+        finally:
+            engine.dispose()
+    finally:
+        if tmp_ctx is not None:
+            tmp_ctx.cleanup()
+
+
 def main(argv: list[str] | None = None) -> int:
-    del argv  # CLI takes no args; paths come from TEXTBOOKS_DIR + PRD names.
+    del argv  # CLI takes no args; mode/paths come from env.
     logging.basicConfig(
         level=logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
-    return run_metrics_job()
+    mode = ingest_mode()
+    if mode == "metrics":
+        return run_metrics_job()
+    return run_tracer_job()
