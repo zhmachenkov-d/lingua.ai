@@ -95,6 +95,14 @@ services:
       context: ./apps/ingest
       network: host
     network_mode: host
+    environment:
+      TEXTBOOKS_DIR: /textbooks
+      SPIKE_DOCS_DIR: /app/docs
+      TORCH_DEVICE: cpu
+    volumes:
+      - ./textbooks:/textbooks:ro
+      - ./apps/ingest/docs:/app/docs
+    command: ["python", "main.py"]
 
 volumes:
   db_data:
