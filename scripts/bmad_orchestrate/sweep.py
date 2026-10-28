@@ -274,6 +274,7 @@ def run_sweep(
     no_prompt: bool,
     no_push: bool = False,
     yes: bool = False,
+    only: list[str] | None = None,
 ) -> RunState:
     """Triage deferred-work ledgers and execute decision-free bundles."""
     ledgers = find_initiative_ledgers(
@@ -281,8 +282,14 @@ def run_sweep(
     )
     entries: list[DeferredEntry] = []
     ledger_by_key: dict[str, Path] = {}
+    only_filters = [o.strip().lower() for o in (only or []) if o and o.strip()]
     for ledger in ledgers:
         for entry in parse_ledger(ledger):
+            if only_filters and not any(
+                f in entry.key.lower() or f in entry.summary.lower()
+                for f in only_filters
+            ):
+                continue
             entries.append(entry)
             ledger_by_key[entry.key] = ledger
 

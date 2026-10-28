@@ -123,6 +123,34 @@ class PolicyTests(unittest.TestCase):
                 load_policy(root, create_if_missing=False)
             self.assertIn("remote", str(ctx.exception))
 
+    def test_tickets_mark_done_and_thorough_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            text = path.read_text(encoding="utf-8")
+            text = text.replace('mark_done = "auto"', 'mark_done = "never"')
+            text = text.replace(
+                'thorough_review = "never"', 'thorough_review = "high-risk"'
+            )
+            path.write_text(text, encoding="utf-8")
+            policy = load_policy(root, create_if_missing=False)
+            self.assertEqual(policy.tickets.mark_done, "never")
+            self.assertEqual(policy.tickets.thorough_review, "high-risk")
+
+    def test_rejects_invalid_thorough_review(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = ensure_policy_template(root)
+            path.write_text(
+                DEFAULT_POLICY_TOML.replace(
+                    'thorough_review = "never"', 'thorough_review = "sometimes"'
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(Exception) as ctx:
+                load_policy(root, create_if_missing=False)
+            self.assertIn("thorough_review", str(ctx.exception))
+
 
 class _FakeUsage:
     def __init__(self, total_tokens: int) -> None:
@@ -326,6 +354,84 @@ class RunStateTests(unittest.TestCase):
             self.assertEqual(state.status, "running")
             self.assertEqual(state.current_unit.phase, "build")
             self.assertTrue(state.current_unit.extra.get("plan_checkpoint_cleared"))
+
+    def test_confirm_pick_plan_checkpoint_records_approval(self) -> None:
+        from bmad_orchestrate.run_state import PAUSE_PICK_PLAN_CHECKPOINT
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = create_run(root, mode="all", model="auto")
+            pause_run(
+                root,
+                state,
+                reason=PAUSE_PICK_PLAN_CHECKPOINT,
+                detail="approve story",
+                ticket="1.1",
+            )
+            confirm_parked(root, state, ticket="1.1")
+            self.assertEqual(state.status, "running")
+            self.assertIn("1.1", state.ticket_story_approvals)
+
+    def test_resolve_escalation_clears_escalated_phase(self) -> None:
+        from bmad_orchestrate.run_state import PAUSE_PICK_ESCALATION
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            state = create_run(root, mode="all", model="auto")
+            state.task_phases["1.1"] = "escalated"
+            pause_run(
+                root,
+                state,
+                reason=PAUSE_PICK_ESCALATION,
+                detail="blocked plan",
+                ticket="1.1",
+            )
+            resolve_blocked(root, state, ticket="1.1")
+            self.assertEqual(state.status, "running")
+            self.assertNotIn("1.1", state.task_phases)
+
+
+class PickLoopHaltTests(unittest.TestCase):
+    def test_halt_before_dispatch_does_not_call_process_ticket(self) -> None:
+        from bmad_orchestrate import cli as cli_mod
+        from bmad_orchestrate.policy import Policy
+        from bmad_orchestrate.report import RunReport
+        from bmad_orchestrate.tickets_source import (
+            HALT_HITL,
+            PAUSE_TICKET_HITL,
+            Halt,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "_bmad").mkdir()
+            state = create_run(root, mode="all", model="auto")
+            report = RunReport()
+            halt = Halt(HALT_HITL, "1.1", None, "1.1 is a hitl ticket")
+            with (
+                mock.patch.object(cli_mod, "load_next_view"),
+                mock.patch.object(cli_mod, "load_status_view"),
+                mock.patch.object(cli_mod, "decide_pick", return_value=halt),
+                mock.patch.object(cli_mod, "process_ticket") as process,
+            ):
+                with self.assertRaises(Exception) as ctx:
+                    cli_mod._execute_run_loop(
+                        project_root=root,
+                        report=report,
+                        policy=Policy(),
+                        run_state=state,
+                        model="auto",
+                        dry_run=False,
+                        no_push=True,
+                        yes=True,
+                        ticket=None,
+                        epic=None,
+                    )
+                process.assert_not_called()
+                self.assertIn("hitl", str(ctx.exception).lower())
+            loaded = load_run(root, state.run_id)
+            self.assertEqual(loaded.status, "paused")
+            self.assertEqual(loaded.pause_reason, PAUSE_TICKET_HITL)
 
 
 class WorktreeNamingTests(unittest.TestCase):

@@ -21,6 +21,7 @@ from .constants import (
 ENGINE_NAME = "bmad-orchestrate"
 ENGINE_VERSION = 1
 
+# Mid-pipeline / legacy pause stages (underscore form).
 PAUSE_PLAN_CHECKPOINT = "plan_checkpoint"
 PAUSE_DONE_CHECKPOINT = "done_checkpoint"
 PAUSE_BLOCKED = "blocked"
@@ -29,6 +30,25 @@ PAUSE_EPIC_BOUNDARY = "epic_boundary"
 PAUSE_OPERATOR = "operator_confirm"
 PAUSE_ERROR = "error"
 PAUSE_PLATEAU = "plateau_deferred"
+
+# Pick-time pause stages (upstream hyphen form; see tickets_source.HALT_STAGES).
+PAUSE_PICK_PLAN_CHECKPOINT = "plan-checkpoint"
+PAUSE_PICK_EPIC_BOUNDARY = "epic-boundary"
+PAUSE_PICK_ESCALATION = "escalation"
+PAUSE_PICK_TICKET_HITL = "ticket-hitl"
+PAUSE_PICK_TICKET_REFINE = "ticket-refine"
+PAUSE_PICK_TICKET_TREE = "ticket-tree"
+
+PICK_PAUSE_STAGES = frozenset(
+    {
+        PAUSE_PICK_PLAN_CHECKPOINT,
+        PAUSE_PICK_EPIC_BOUNDARY,
+        PAUSE_PICK_ESCALATION,
+        PAUSE_PICK_TICKET_HITL,
+        PAUSE_PICK_TICKET_REFINE,
+        PAUSE_PICK_TICKET_TREE,
+    }
+)
 
 
 @dataclass
@@ -77,6 +97,14 @@ class RunState:
     retros_done: list[str] = field(default_factory=list)
     seen_refs: list[str] = field(default_factory=list)
     awaiting_confirm: list[str] = field(default_factory=list)
+    # Tickets pick-loop durable state (decide_pick inputs).
+    source: str = "tickets"
+    task_phases: dict[str, str] = field(default_factory=dict)
+    ticket_story_approvals: list[str] = field(default_factory=list)
+    ticket_epic_closures: dict[str, str] = field(default_factory=dict)
+    ticket_epic_closure_acked: list[str] = field(default_factory=list)
+    ticket_epic_closure_resumed: list[str] = field(default_factory=list)
+    committed_epics: list[str] = field(default_factory=list)
     report: dict[str, Any] = field(default_factory=dict)
     meta: dict[str, Any] = field(default_factory=dict)
 
@@ -135,6 +163,22 @@ class RunState:
             retros_done=list(data.get("retros_done") or []),
             seen_refs=list(data.get("seen_refs") or []),
             awaiting_confirm=list(data.get("awaiting_confirm") or []),
+            source=str(data.get("source") or "tickets"),
+            task_phases={
+                str(k): str(v) for k, v in dict(data.get("task_phases") or {}).items()
+            },
+            ticket_story_approvals=list(data.get("ticket_story_approvals") or []),
+            ticket_epic_closures={
+                str(k): str(v)
+                for k, v in dict(data.get("ticket_epic_closures") or {}).items()
+            },
+            ticket_epic_closure_acked=list(
+                data.get("ticket_epic_closure_acked") or []
+            ),
+            ticket_epic_closure_resumed=list(
+                data.get("ticket_epic_closure_resumed") or []
+            ),
+            committed_epics=list(data.get("committed_epics") or []),
             report=dict(data.get("report") or {}),
             meta=dict(data.get("meta") or {}),
         )
@@ -296,16 +340,18 @@ def resume_armed(project_root: Path, state: RunState) -> RunState:
 def resolve_blocked(
     project_root: Path, state: RunState, *, ticket: str | None = None
 ) -> RunState:
-    """Re-arm a blocked/plateau unit for another attempt."""
+    """Re-arm a blocked/plateau/escalation unit for another attempt."""
     target = ticket or state.pause_ticket
     if state.pause_reason and state.pause_reason not in {
         PAUSE_BLOCKED,
         PAUSE_PLATEAU,
         PAUSE_ERROR,
+        PAUSE_PICK_ESCALATION,
+        PAUSE_PICK_TICKET_TREE,
     }:
         raise OrchestratorHalt(
             SHUTDOWN_ERROR,
-            f"resolve only applies to blocked/plateau/error pauses "
+            f"resolve only applies to blocked/plateau/error/escalation pauses "
             f"(got {state.pause_reason})",
         )
     if target and state.current_unit and state.current_unit.ref != target:
@@ -322,6 +368,9 @@ def resolve_blocked(
     if target:
         state.blocked_refs = [b for b in state.blocked_refs if b.get("ref") != target]
         state.deferred_refs = [r for r in state.deferred_refs if r != target]
+        # Drop escalated phase so decide_pick re-reads the tree for this ref.
+        if state.task_phases.get(target) == "escalated":
+            del state.task_phases[target]
     state.pause_ticket = target
     return resume_armed(project_root, state)
 
@@ -329,13 +378,22 @@ def resolve_blocked(
 def confirm_parked(
     project_root: Path, state: RunState, *, ticket: str | None = None
 ) -> RunState:
-    """Operator confirms a parked checkpoint / epic-boundary / confirm pause."""
+    """Operator confirms a parked checkpoint / epic-boundary / refine / hitl pause."""
+    from .tickets_source import (
+        approve_paused_story_file,
+        resume_epic_closure,
+    )
+
     allowed = {
         PAUSE_PLAN_CHECKPOINT,
         PAUSE_DONE_CHECKPOINT,
         PAUSE_EPIC_BOUNDARY,
         PAUSE_OPERATOR,
         PAUSE_UNREFINED_BUGS,
+        PAUSE_PICK_PLAN_CHECKPOINT,
+        PAUSE_PICK_EPIC_BOUNDARY,
+        PAUSE_PICK_TICKET_HITL,
+        PAUSE_PICK_TICKET_REFINE,
     }
     if state.pause_reason and state.pause_reason not in allowed:
         raise OrchestratorHalt(
@@ -346,11 +404,28 @@ def confirm_parked(
     target = ticket or state.pause_ticket
     if target and target in state.awaiting_confirm:
         state.awaiting_confirm = [r for r in state.awaiting_confirm if r != target]
+
+    # Pick-time plan-checkpoint: record story-file approval before clearing pause.
+    if state.pause_reason == PAUSE_PICK_PLAN_CHECKPOINT:
+        if target and target != state.pause_ticket:
+            state.pause_ticket = target
+        approve_paused_story_file(state)
+    # Pick-time epic-boundary: ack / resume closure tracking.
+    elif state.pause_reason == PAUSE_PICK_EPIC_BOUNDARY:
+        if target and target != state.pause_ticket:
+            state.pause_ticket = target
+        resumed = resume_epic_closure(state)
+        if resumed and resumed not in state.ticket_epic_closure_acked:
+            state.ticket_epic_closure_acked.append(resumed)
+        elif target and target not in state.ticket_epic_closure_acked:
+            # Awaiting-closure / rejected: operator closed epic; ack so pick moves on.
+            state.ticket_epic_closure_acked.append(target)
+
     if state.current_unit and (
         target is None or state.current_unit.ref == target
     ):
         # After plan checkpoint confirm → continue build; after done → mark/landing.
-        if state.pause_reason == PAUSE_PLAN_CHECKPOINT:
+        if state.pause_reason in {PAUSE_PLAN_CHECKPOINT, PAUSE_PICK_PLAN_CHECKPOINT}:
             state.current_unit.phase = "build"
             state.current_unit.extra["plan_checkpoint_cleared"] = True
         elif state.pause_reason == PAUSE_DONE_CHECKPOINT:

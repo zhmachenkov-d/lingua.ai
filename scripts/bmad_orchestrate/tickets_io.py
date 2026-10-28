@@ -13,6 +13,15 @@ from .constants import (
     OrchestratorHalt,
     log,
 )
+from .ticketmodel import (
+    FindResult,
+    NextView,
+    StatusView,
+    TicketsSchemaError,
+    parse_find,
+    parse_next,
+    parse_status,
+)
 from .tracker import tracker_mark_done
 
 
@@ -78,6 +87,38 @@ def tickets_status(project_root: Path, folder: str | None = None) -> dict[str, A
     if folder:
         args.append(folder)
     return tickets_cmd(project_root, *args)
+
+
+def _schema_halt(err: TicketsSchemaError) -> OrchestratorHalt:
+    return OrchestratorHalt(
+        SHUTDOWN_ERROR, f"tickets.py schema: {err.command}.{err.field}: {err.detail}"
+    )
+
+
+def load_next_view(project_root: Path, folder: str | None = None) -> NextView:
+    """``next`` as a typed :class:`NextView`."""
+    try:
+        return parse_next(tickets_next(project_root, folder))
+    except TicketsSchemaError as err:
+        raise _schema_halt(err) from err
+
+
+def load_status_view(project_root: Path, folder: str | None = None) -> StatusView:
+    """``status`` as a typed :class:`StatusView`."""
+    try:
+        return parse_status(tickets_status(project_root, folder))
+    except TicketsSchemaError as err:
+        raise _schema_halt(err) from err
+
+
+def load_find_result(
+    project_root: Path, ref: str, folder: str | None = None
+) -> FindResult:
+    """``find`` as a typed :class:`FindResult`."""
+    try:
+        return parse_find(tickets_find(project_root, ref, folder))
+    except TicketsSchemaError as err:
+        raise _schema_halt(err) from err
 
 
 def tickets_mirror(

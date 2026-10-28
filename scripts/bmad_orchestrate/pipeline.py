@@ -47,6 +47,7 @@ from .scm import (
     require_clean_tree,
 )
 from .tickets_io import tickets_find, tickets_mark_done, tickets_status
+from .tickets_source import wants_thorough
 from .tracker import tracker_post_report
 from .verify import verify_unit
 
@@ -189,6 +190,7 @@ def build_prompt(
     ref: str,
     *,
     halt_after_planning: bool = False,
+    thorough: bool = False,
     fix_context: str | None = None,
     free_form_intent: str | None = None,
 ) -> str:
@@ -202,6 +204,8 @@ def build_prompt(
             f"Run skill bmad-build-auto for ticket {ref}. "
             "Do not start any other ticket."
         )
+    if thorough:
+        base += " thorough"
     if halt_after_planning:
         return base + " Halt after planning."
     if fix_context:
@@ -213,12 +217,15 @@ def build_prompt(
     return base
 
 
-def review_prompt(ref: str) -> str:
-    return (
+def review_prompt(ref: str, *, thorough: bool = False) -> str:
+    base = (
         f"Run skill bmad-build-auto for ticket {ref} in follow-up review mode. "
         "Perform an adversarial fresh-context review of the implementation against "
         "the plan. Fix any clear defects you find. Do not start any other ticket."
     )
+    if thorough:
+        return base + " thorough"
+    return base
 
 
 def retro_prompt(epic_ref: str) -> str:
@@ -257,7 +264,14 @@ def _should_review(
         return False
     if policy.review.trigger == "always":
         return True
+    # thorough_review=always also forces a follow-up review pass.
+    if wants_thorough(policy.tickets.thorough_review, str(plan_fm.get("risk") or "")):
+        return True
     return bool(plan_fm.get("followup_review_recommended"))
+
+
+def _ticket_thorough(policy: Policy, risk: str) -> bool:
+    return wants_thorough(policy.tickets.thorough_review, risk)
 
 
 def process_ticket(
@@ -616,14 +630,17 @@ def _process_ticket_pipeline(
         "done",
         "blocked",
     )
-    halt_after_planning = bool(
-        plan_checkpoint
-        and plan_status not in post_plan_statuses
-        and not (
-            run_state.current_unit
-            and run_state.current_unit.extra.get("plan_checkpoint_cleared")
-        )
+    # Mid-pipeline plan-checkpoint leg (unrefined entry): pick-time refine/hitl
+    # already halted before dispatch, so this only covers the build-auto halt leg.
+    cleared = bool(
+        run_state.current_unit
+        and run_state.current_unit.extra.get("plan_checkpoint_cleared")
     )
+    halt_after_planning = bool(
+        plan_checkpoint and plan_status not in post_plan_statuses and not cleared
+    )
+    risk = str(found.get("risk") or plan_fm.get("risk") or "")
+    thorough = _ticket_thorough(policy, risk)
 
     unit_state = run_state.current_unit
     if unit_state is None or unit_state.ref != ticket_ref:
@@ -632,12 +649,13 @@ def _process_ticket_pipeline(
     save_run(project_root, run_state)
 
     log.info(
-        "ticket start ref=%s epic=%s plan_status=%s isolation=%s remote=%s",
+        "ticket start ref=%s epic=%s plan_status=%s isolation=%s remote=%s thorough=%s",
         ticket_ref,
         epic,
         plan_status or "(none)",
         policy.scm.isolation,
         policy.scm.remote,
+        thorough,
     )
 
     session: WorktreeSession | None = None
@@ -648,6 +666,7 @@ def _process_ticket_pipeline(
         prompt = build_prompt(
             ticket_ref,
             halt_after_planning=halt_after_planning,
+            thorough=thorough,
             free_form_intent=free_form_intent,
         )
         agent = run_cursor_agent(
@@ -709,6 +728,7 @@ def _process_ticket_pipeline(
         prompt = build_prompt(
             ticket_ref,
             halt_after_planning=True,
+            thorough=thorough,
             free_form_intent=free_form_intent,
         )
         agent = run_cursor_agent(
@@ -775,6 +795,7 @@ def _process_ticket_pipeline(
         save_run(project_root, run_state)
         prompt = build_prompt(
             ticket_ref,
+            thorough=thorough,
             fix_context=fix_context,
             free_form_intent=free_form_intent,
         )
@@ -929,7 +950,7 @@ def _process_ticket_pipeline(
         review_agent = run_cursor_agent(
             project_root=project_root,
             model=model,
-            prompt=review_prompt(ticket_ref),
+            prompt=review_prompt(ticket_ref, thorough=thorough),
             dry_run=False,
             cwd=agent_cwd,
             resume_agent_id=None,
@@ -966,7 +987,9 @@ def _process_ticket_pipeline(
             fix_agent = run_cursor_agent(
                 project_root=project_root,
                 model=model,
-                prompt=build_prompt(ticket_ref, fix_context=fix_outputs),
+                prompt=build_prompt(
+                    ticket_ref, thorough=thorough, fix_context=fix_outputs
+                ),
                 dry_run=False,
                 cwd=agent_cwd,
                 **agent_call_limits(policy.limits),
@@ -1047,13 +1070,15 @@ def _process_ticket_pipeline(
     # --- mark done + land ---
     unit_state.phase = "landing"
     save_run(project_root, run_state)
-    if plan_path:
+    if plan_path and policy.tickets.mark_done == "auto":
         tickets_mark_done(
             project_root,
             ticket_ref,
             plan_path,
             tracker_id=tracker_id,
         )
+    elif policy.tickets.mark_done == "never":
+        log.info("mark_done=never; leaving plan built for %s", ticket_ref)
 
     effective_no_push = no_push or policy.scm.remote != "pr"
     pr_url = land_unit(
