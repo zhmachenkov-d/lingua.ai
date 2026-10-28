@@ -9,10 +9,11 @@
       "version": "latest",
       "extensions": "dlvhdr/gh-dash,github/gh-aw"
     },
-    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+    "ghcr.io/devcontainers/features/docker-in-docker:4": {
       "version": "latest",
       "moby": false,
-      "dockerDashComposeVersion": "v2"
+      "dockerDashComposeVersion": "v2",
+      "iptablesSwitchAtRuntime": true
     },
     "./uv": {
       "version": "latest"
@@ -21,7 +22,8 @@
   "initializeCommand": "bash .devcontainer/ensure-env.sh",
   "runArgs": ["--env-file", "${localWorkspaceFolder}/.env"],
   "mounts": [
-    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly=true"
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/vscode/.ssh,type=bind,consistency=cached,readonly=true",
+    "source=${localWorkspaceFolder}/.devcontainer/docker-daemon.json,target=/etc/docker/daemon.json,type=bind,consistency=cached,readonly=true"
   ],
   "postCreateCommand": "bash .devcontainer/post-create.sh",
   "customizations": {
