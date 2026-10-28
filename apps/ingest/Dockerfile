@@ -13,8 +13,16 @@ WORKDIR /app
 # Marker/Surya CPU path needs upstream llama-server (not shipped by marker-pdf).
 # Pin a known ubuntu-x64 release for reproducible Compose HITL.
 ARG LLAMA_CPP_RELEASE=b11946
+# Tesseract/ocrmypdf = default Compose CPU OCR; llama-server kept for optional Marker.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates \
+      curl \
+      ghostscript \
+      libgomp1 \
+      ocrmypdf \
+      tesseract-ocr \
+      tesseract-ocr-eng \
  && curl -fsSL \
       "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_RELEASE}/llama-${LLAMA_CPP_RELEASE}-bin-ubuntu-x64.tar.gz" \
       -o /tmp/llama.cpp.tar.gz \

@@ -1,7 +1,7 @@
 [project]
 name = "lingua-ingest"
 version = "0.1.0"
-description = "Lingua.ai corpus ingest job (Marker Compose CPU spike)"
+description = "Lingua.ai corpus ingest job (ocrmypdf CPU OCR + optional Marker)"
 requires-python = ">=3.13"
 dependencies = [
   "marker-pdf==2.0.0",
