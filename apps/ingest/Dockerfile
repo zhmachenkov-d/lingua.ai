@@ -14,7 +14,7 @@ WORKDIR /app
 # Pin a known ubuntu-x64 release for reproducible Compose HITL.
 ARG LLAMA_CPP_RELEASE=b11946
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
+ && apt-get install -y --no-install-recommends ca-certificates curl libgomp1 \
  && curl -fsSL \
       "https://github.com/ggml-org/llama.cpp/releases/download/${LLAMA_CPP_RELEASE}/llama-${LLAMA_CPP_RELEASE}-bin-ubuntu-x64.tar.gz" \
       -o /tmp/llama.cpp.tar.gz \
