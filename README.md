@@ -207,7 +207,7 @@ npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 
 ### Ingest Marker CPU spike
 
-Startable without `db` (Compose profile `ingest`). Mounts gitignored `textbooks/` read-only and prints one JSON metrics object per Students’ Book / Workbook PDF (`status` `ok` | `fallback` | `parse_failed`). Missing required PDF → non-zero exit + path on stderr. Does **not** mint Ready units or write the spike note — owner HITL fills `_bmad-output/.../spike-marker-compose-cpu-spike-note.md`.
+Startable without `db` (Compose profile `ingest`). Mounts gitignored `textbooks/` read-only and prints one JSON metrics object per Students’ Book / Workbook PDF (`status` `ok` | `fallback` | `parse_failed`). Image ships pinned CPU `llama-server` for Marker/Surya. Missing required PDF → non-zero exit + path on stderr. Does **not** mint Ready units or write the spike note — owner HITL fills `_bmad-output/.../spike-marker-compose-cpu-spike-note.md`.
 
 ```bash
 docker compose --profile ingest run --rm ingest

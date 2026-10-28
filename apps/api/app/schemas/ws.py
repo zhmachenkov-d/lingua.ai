@@ -53,7 +53,8 @@ def _load_max_turn_text_length() -> int:
         value = raw["maxTurnTextLength"]
         if type(value) is not int:
             raise TypeError(
-                f"maxTurnTextLength in {path} must be an int, got {type(value).__name__}"
+                "maxTurnTextLength in "
+                f"{path} must be an int, got {type(value).__name__}"
             )
         return value
     raise FileNotFoundError(

@@ -14,7 +14,7 @@ from app.db.constants import MVP_LEARNER_ID
 from app.models.learner_profile import LearnerProfile
 from app.models.session import Session
 
-# Skeleton Router turn has checkpointer ``active_agent: None``; Session enum requires a value.
+# Router turn checkpointer has active_agent None; Session enum needs a value.
 _MIRROR_ACTIVE_AGENT = "Router"
 
 

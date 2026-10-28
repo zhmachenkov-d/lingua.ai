@@ -6,9 +6,9 @@ Angular 22 learner UI under `apps/web`. This story ships a **Russian-chrome text
 
 ## Local URLs
 
-| Surface                                      | URL                                                    |
-| -------------------------------------------- | ------------------------------------------------------ |
-| Chat UI                                      | http://127.0.0.1:4200/                                 |
+| Surface                                                    | URL                                              |
+| ---------------------------------------------------------- | ------------------------------------------------ |
+| Chat UI                                                    | http://127.0.0.1:4200/                           |
 | Learner WebSocket (same-origin via nginx/`ng serve` proxy) | `ws://{host}/ws` (e.g. `ws://127.0.0.1:4200/ws`) |
 
 Compose production `web` nginx proxies `/api/` and upgrades `/ws`. Host/`web-dev` `ng serve` uses `proxy.conf.json` for `/ws` → `127.0.0.1:8000`.

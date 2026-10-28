@@ -89,6 +89,8 @@ services:
     environment:
       TEXTBOOKS_DIR: /textbooks
       TORCH_DEVICE: cpu
+      LLAMA_CPP_BINARY: /usr/local/bin/llama-server
+      SURYA_INFERENCE_BACKEND: llamacpp
     volumes:
       - ./textbooks:/textbooks:ro
     command: ["python", "main.py"]
