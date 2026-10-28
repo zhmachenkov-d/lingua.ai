@@ -6,7 +6,7 @@ Use this when the user asks about `bmad-build-auto`, building tickets with no hu
 
 - One invocation plans, implements, and reviews one ticket, then writes a final status to its plan. It never asks a question.
 - Its review is `quick` by default. Passing `thorough` in the invocation suits a ticket that is unusually risky or makes many design decisions.
-- It builds only what the invocation names and never picks work itself; given nothing, it halts `unclear intent`. It never moves on to a second ticket. Something else chooses each ticket and runs the loop: the user, a script, an AI coding session starting one worker per ticket, or an orchestrator such as bmad-loop, which does not dispatch from the ticket tree yet.
+- It builds only what the invocation names and never picks work itself; given nothing, it halts `unclear intent`. It never moves on to a second ticket. Something else chooses each ticket and runs the loop: the user, a script, an AI coding session starting one worker per ticket, or the ticket-tree dispatcher `uv run scripts/bmad_orchestrate.py` (Cursor SDK; no tmux).
 - It needs subagents and, under version control, a clean working tree on a branch that fits the ticket's epic.
 
 ## Accepted inputs
@@ -58,6 +58,21 @@ When review halts on `intent gap`, the run saves the attempted change as a patch
 - `Auto Run Result`: summary, review findings, verification, residual risks.
 - The run commits locally and never pushes.
 - After the epic's last ticket, recommend `bmad-retrospective`.
+
+## Ticket-tree dispatcher
+
+For an unattended loop over the BMAD v7 ticket tree, run:
+
+```bash
+uv run scripts/bmad_orchestrate.py run
+uv run scripts/bmad_orchestrate.py run --epic epic-cart
+uv run scripts/bmad_orchestrate.py run --ticket 1.2
+uv run scripts/bmad_orchestrate.py resume <run_id>
+uv run scripts/bmad_orchestrate.py confirm <run_id>
+uv run scripts/bmad_orchestrate.py resolve <run_id>
+```
+
+The dispatcher owns queueing (`decide_pick`), gates, verify, commit, and retries. Cursor SDK agents run `bmad-build-auto` / review / retrospective / sweep triage. It does not use tmux or coding-agent CLIs. Policy lives at `.bmad-orchestrate/policy.toml` (`[tickets] mark_done`, `thorough_review`, `[limits] agent_timeout_s` / `agent_max_tokens`).
 
 ## When it fits
 

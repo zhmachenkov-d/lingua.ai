@@ -65,6 +65,10 @@ class SweepPolicy:
 @dataclass
 class TicketsPolicy:
     script: str = "_bmad/method/scripts/tickets.py"
+    # auto | never — whether the orchestrator marks built tickets done.
+    mark_done: str = "auto"
+    # never | high-risk | always — thorough review selection for dispatch.
+    thorough_review: str = "never"
 
 
 @dataclass
@@ -123,6 +127,10 @@ attended_prompt = true
 
 [tickets]
 script = "_bmad/method/scripts/tickets.py"
+# auto | never
+mark_done = "auto"
+# never | high-risk | always
+thorough_review = "never"
 """
 
 
@@ -241,6 +249,15 @@ def load_policy(project_root: Path, *, create_if_missing: bool = True) -> Policy
         )
 
     script = str(tickets_raw.get("script", "_bmad/method/scripts/tickets.py"))
+    mark_done = str(tickets_raw.get("mark_done", "auto"))
+    _require_choice("tickets", "mark_done", mark_done, {"auto", "never"})
+    thorough_review = str(tickets_raw.get("thorough_review", "never"))
+    _require_choice(
+        "tickets",
+        "thorough_review",
+        thorough_review,
+        {"never", "high-risk", "always"},
+    )
     ledger_name = str(sweep_raw.get("ledger_name", "deferred-work.md"))
 
     return Policy(
@@ -284,5 +301,9 @@ def load_policy(project_root: Path, *, create_if_missing: bool = True) -> Policy
             ledger_name=ledger_name,
             attended_prompt=_bool(sweep_raw, "attended_prompt", True),
         ),
-        tickets=TicketsPolicy(script=script),
+        tickets=TicketsPolicy(
+            script=script,
+            mark_done=mark_done,
+            thorough_review=thorough_review,
+        ),
     )
