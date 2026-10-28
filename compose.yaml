@@ -86,6 +86,12 @@ services:
     build:
       context: ./apps/ingest
       network: host
+    environment:
+      TEXTBOOKS_DIR: /textbooks
+      TORCH_DEVICE: cpu
+    volumes:
+      - ./textbooks:/textbooks:ro
+    command: ["python", "main.py"]
 
 volumes:
   db_data:
