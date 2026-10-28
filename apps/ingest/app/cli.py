@@ -24,6 +24,22 @@ def textbooks_dir() -> Path:
     return Path(os.environ.get("TEXTBOOKS_DIR", "/textbooks"))
 
 
+def _default_primary_adapter() -> ParseAdapter:
+    """Select primary parse adapter from ``PARSE_PRIMARY`` (default: ocrmypdf)."""
+    choice = os.environ.get("PARSE_PRIMARY", "ocrmypdf").strip().lower() or "ocrmypdf"
+    if choice in {"ocrmypdf", "ocrmypdf_tesseract", "tesseract"}:
+        from app.parse.ocrmypdf_tesseract import OcrmypdfAdapter
+
+        return OcrmypdfAdapter()
+    if choice == "marker":
+        from app.parse.marker import MarkerAdapter
+
+        # Optional HITL subset, e.g. MARKER_PAGE_RANGE=0-19 (Marker zero-based).
+        page_range = os.environ.get("MARKER_PAGE_RANGE", "").strip() or None
+        return MarkerAdapter(mode="fast", page_range=page_range)
+    raise ValueError(f"Unknown PARSE_PRIMARY={choice!r}; expected ocrmypdf or marker")
+
+
 def metrics_payload(
     *,
     pdf_name: str,
@@ -82,11 +98,7 @@ def run_metrics_job(
     if textbooks is None:
         textbooks = textbooks_dir()
     if primary is None:
-        from app.parse.marker import MarkerAdapter
-
-        # Optional HITL subset, e.g. MARKER_PAGE_RANGE=0-19 (Marker zero-based).
-        page_range = os.environ.get("MARKER_PAGE_RANGE", "").strip() or None
-        primary = MarkerAdapter(mode="fast", page_range=page_range)
+        primary = _default_primary_adapter()
     if fallback is None:
         from app.parse.pymupdf_text import PyMuPDFTextAdapter
 

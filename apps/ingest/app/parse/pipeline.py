@@ -15,10 +15,10 @@ def parse_pdf(
     primary: ParseAdapter,
     fallback: ParseAdapter,
 ) -> ParseResult:
-    """Try Marker primary; on exception/failure use explicit PyMuPDF fallback.
+    """Try primary adapter; on exception/failure use explicit PyMuPDF fallback.
 
     Empty primary yield stays ``ok`` (metrics only). Fallback is only for
-    Marker raise / OOM / hard failure — never a silent second Ready path.
+    primary raise / OOM / hard failure — never a silent second Ready path.
     """
     if not pdf_path.is_file():
         return ParseResult(
@@ -38,7 +38,7 @@ def parse_pdf(
 
     logger.warning(
         "Primary parse unusable for %s (%s); trying PyMuPDF fallback",
-        pdf_path,
+        pdf_path.name,
         primary_result.error or primary_result.status,
     )
 
@@ -55,9 +55,10 @@ def parse_pdf(
             error=primary_result.error,
         )
 
-    errors = "; ".join(
-        e for e in (primary_result.error, fallback_result.error) if e
-    ) or "Both Marker and PyMuPDF paths failed"
+    errors = (
+        "; ".join(e for e in (primary_result.error, fallback_result.error) if e)
+        or "Both primary and PyMuPDF paths failed"
+    )
     return ParseResult(
         text=fallback_result.text,
         page_count=max(primary_result.page_count, fallback_result.page_count),
