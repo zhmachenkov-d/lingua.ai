@@ -4,8 +4,9 @@ from datetime import datetime
 from sqlalchemy import DateTime, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-# Learner LTM + Session mirror only. LangGraph checkpointer tables are created
-# by AsyncPostgresSaver.setup() and are never part of this metadata / Alembic.
+# Shared Alembic metadata (LTM, Session mirror, corpus Ready/embeddings).
+# LangGraph checkpointer tables are created by AsyncPostgresSaver.setup()
+# and are never part of this metadata / Alembic.
 
 
 class Base(DeclarativeBase):

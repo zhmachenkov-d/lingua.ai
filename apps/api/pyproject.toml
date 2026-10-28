@@ -13,7 +13,12 @@ dependencies = [
   "sqlalchemy[asyncio]>=2,<3",
   "alembic>=1.13",
   "openai>=1.0,<3",
+  "pgvector>=0.4,<0.5",
+  "lingua-ids",
 ]
+
+[tool.uv.sources]
+lingua-ids = { path = "../../packages/lingua_ids" }
 
 [project.optional-dependencies]
 dev = [
