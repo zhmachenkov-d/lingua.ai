@@ -84,7 +84,9 @@ def run_metrics_job(
     if primary is None:
         from app.parse.marker import MarkerAdapter
 
-        primary = MarkerAdapter(mode="fast")
+        # Optional HITL subset, e.g. MARKER_PAGE_RANGE=0-19 (Marker zero-based).
+        page_range = os.environ.get("MARKER_PAGE_RANGE", "").strip() or None
+        primary = MarkerAdapter(mode="fast", page_range=page_range)
     if fallback is None:
         from app.parse.pymupdf_text import PyMuPDFTextAdapter
 

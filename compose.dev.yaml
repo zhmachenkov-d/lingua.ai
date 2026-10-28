@@ -100,6 +100,11 @@ services:
       TORCH_DEVICE: cpu
       LLAMA_CPP_BINARY: /usr/local/bin/llama-server
       SURYA_INFERENCE_BACKEND: llamacpp
+      # Default llama.cpp slots=8 thrash CPU OCR; pin 1 for Compose CPU spike HITL.
+      SURYA_INFERENCE_PARALLEL: "1"
+      LLAMA_CPP_EXTRA_ARGS: "--threads 8"
+      # Spike speed: first 20 pages only (unset for full SB/WB).
+      MARKER_PAGE_RANGE: "0-19"
     volumes:
       - ./textbooks:/textbooks:ro
     command: ["python", "main.py"]

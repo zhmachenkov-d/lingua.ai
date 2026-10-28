@@ -26,8 +26,13 @@ def _page_count_from_rendered(rendered: object, text: str) -> int:
 class MarkerAdapter:
     """Primary parse path: Marker / marker-pdf CPU ``fast`` mode."""
 
-    def __init__(self, mode: str = "fast") -> None:
+    def __init__(
+        self,
+        mode: str = "fast",
+        page_range: str | None = None,
+    ) -> None:
         self._mode = mode
+        self._page_range = page_range
         self._converter: object | None = None
 
     @property
@@ -41,9 +46,14 @@ class MarkerAdapter:
         from marker.converters.pdf import PdfConverter
         from marker.models import create_model_dict
 
-        config_parser = ConfigParser(
-            {"mode": self._mode, "output_format": "markdown"}
-        )
+        cli_options: dict[str, object] = {
+            "mode": self._mode,
+            "output_format": "markdown",
+        }
+        if self._page_range:
+            cli_options["page_range"] = self._page_range
+            logger.info("MarkerAdapter page_range=%s", self._page_range)
+        config_parser = ConfigParser(cli_options)
         config_dict = config_parser.generate_config_dict()
         config_dict["mode"] = self._mode
         self._converter = PdfConverter(
