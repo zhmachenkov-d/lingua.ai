@@ -8,7 +8,6 @@ export const NETWORK_FAIL = 'Нет связи. Проверь интернет 
 export const WS_ALREADY_OPEN = 'Чат уже открыт в другой вкладке. Закрой его и нажми «Повторить».';
 export const UNPARSEABLE_FRAME = 'Не удалось обработать ответ сервера. Попробуй ещё раз.';
 export const RETRY_LABEL = 'Повторить';
-export const SOON_LABEL = 'Скоро';
 export const COMPOSER_PLACEHOLDER = 'Напиши сообщение…';
 export const SEND_LABEL = 'Отправить';
 export const BRAND_NAME = 'Lingua AI';

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from app.router.turn import ERROR_MESSAGES, TurnError, TurnSuccess, handle_turn
-from app.schemas.ws import ErrorEvent, TurnCompleteEvent, TurnRequest
+from app.schemas.ws import ErrorEvent, TokenDeltaEvent, TurnCompleteEvent, TurnRequest
 
 router = APIRouter(tags=["ws"])
 logger = logging.getLogger(__name__)
@@ -162,7 +162,10 @@ async def _deliver_finished(
     *,
     turn_id: str | None,
 ) -> None:
-    """Send wire event for a completed turn task. Never discard the result."""
+    """Send wire event for a completed turn task. Never discard the result.
+
+    Tutor teach: emit existing ``token_delta`` then ``turn_complete`` (AD-6).
+    """
     try:
         result = task.result()
     except asyncio.CancelledError:
@@ -172,8 +175,12 @@ async def _deliver_finished(
         return
     if isinstance(result, TurnError):
         await websocket.send_json(_error_wire(result))
-    else:
-        await websocket.send_json(_success_wire(result))
+        return
+    if result.emit_token_delta:
+        await websocket.send_json(
+            TokenDeltaEvent(text=result.message, turn_id=result.turn_id).to_wire()
+        )
+    await websocket.send_json(_success_wire(result))
 
 
 @router.websocket("/ws")

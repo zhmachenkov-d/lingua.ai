@@ -1,6 +1,7 @@
 import { Component, DestroyRef, OnInit, effect, inject, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
 
 import {
   BRAND_NAME,
@@ -10,13 +11,12 @@ import {
   PASTE_TOO_LONG,
   RETRY_LABEL,
   SEND_LABEL,
-  SOON_LABEL,
   UNPARSEABLE_FRAME,
   WS_ALREADY_OPEN,
 } from './chat.copy';
 import { ChatWsService } from './chat-ws.service';
-import { mapCtaIds } from './cta-labels';
-import type { ChatBubble, CtaChip, ServerEvent } from './chat.types';
+import { CTA_INTENT, mapCtaIds } from './cta-labels';
+import type { ChatBubble, CtaChip, CtaId, ServerEvent } from './chat.types';
 
 /**
  * Idle ms with no matching terminal event before network-fail recovery (#60 / #111).
@@ -34,14 +34,16 @@ export const TURN_IDLE_MS = 125_000;
 })
 export class ChatShell implements OnInit {
   private readonly ws = inject(ChatWsService);
+  private readonly router = inject(Router);
   private readonly destroyRef = inject(DestroyRef);
   private nextBubbleId = 0;
   private turnIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Bubble id receiving streamed token_delta for the pending turn. */
+  private streamingBubbleId: string | null = null;
 
   protected readonly brandName = BRAND_NAME;
   protected readonly composerPlaceholder = COMPOSER_PLACEHOLDER;
   protected readonly sendLabel = SEND_LABEL;
-  protected readonly soonLabel = SOON_LABEL;
   protected readonly retryLabel = RETRY_LABEL;
 
   protected readonly draft = signal('');
@@ -87,8 +89,20 @@ export class ChatShell implements OnInit {
     this.send();
   }
 
+  protected onCtaClick(cta: CtaChip): void {
+    if (this.composerDisabled) {
+      return;
+    }
+    if (cta.id === 'cefr') {
+      void this.router.navigateByUrl('/cefr');
+      return;
+    }
+    const intent = CTA_INTENT[cta.id as Exclude<CtaId, 'cefr'>];
+    this.sendText(intent, { showOutbound: false });
+  }
+
   protected send(): void {
-    if (this.inFlight() || this.connectionBanner() !== null || this.connectionState() !== 'open') {
+    if (this.composerDisabled) {
       return;
     }
 
@@ -100,6 +114,16 @@ export class ChatShell implements OnInit {
 
     const text = raw.trim();
     this.localError.set(null);
+    this.sendText(text, { showOutbound: text.length > 0, clearDraft: true });
+  }
+
+  private sendText(
+    text: string,
+    options: { showOutbound: boolean; clearDraft?: boolean },
+  ): void {
+    if (this.composerDisabled) {
+      return;
+    }
 
     const turnId = crypto.randomUUID();
     const sent = this.ws.sendTurn(text, turnId);
@@ -108,11 +132,14 @@ export class ChatShell implements OnInit {
       return;
     }
 
-    if (text.length > 0) {
+    if (options.clearDraft) {
+      this.draft.set('');
+    }
+    if (options.showOutbound && text.length > 0) {
       this.appendBubble({ role: 'outbound', text });
     }
-    this.draft.set('');
     this.pendingTurnId = turnId;
+    this.streamingBubbleId = null;
     this.inFlight.set(true);
     this.armTurnIdleWatchdog();
     this.ctas.set([]);
@@ -132,7 +159,14 @@ export class ChatShell implements OnInit {
     }
 
     if (event.kind === 'token_delta') {
-      // Parsed and ignored — no streaming UI this story.
+      // Only stream while a turn is awaiting a terminal event.
+      if (this.pendingTurnId === null) {
+        return;
+      }
+      if (this.isForeignTerminal(event.turn_id, { softMatchNull: true })) {
+        return;
+      }
+      this.appendTokenDelta(event.text);
       return;
     }
 
@@ -140,9 +174,12 @@ export class ChatShell implements OnInit {
       if (this.isForeignTerminal(event.turn_id)) {
         return;
       }
+      const alreadyStreamed = this.streamingBubbleId !== null;
       this.clearPendingTurn();
-      // Server message as-is (including blank → server CTA_MESSAGE; no client rewrite).
-      this.appendBubble({ role: 'inbound', text: event.message });
+      // Server message as-is; skip duplicate if token_delta already filled the bubble.
+      if (!alreadyStreamed) {
+        this.appendBubble({ role: 'inbound', text: event.message });
+      }
       if (event.backup_notice) {
         this.appendBubble({ role: 'notice', text: event.backup_notice });
       }
@@ -190,6 +227,7 @@ export class ChatShell implements OnInit {
   private clearPendingTurn(): void {
     this.clearTurnIdleWatchdog();
     this.pendingTurnId = null;
+    this.streamingBubbleId = null;
     this.inFlight.set(false);
   }
 
@@ -221,6 +259,21 @@ export class ChatShell implements OnInit {
   private clearInFlightAndShowBanner(message: string): void {
     this.clearPendingTurn();
     this.connectionBanner.set(message);
+  }
+
+  private appendTokenDelta(text: string): void {
+    if (this.streamingBubbleId === null) {
+      const id = `b-${this.nextBubbleId++}`;
+      this.streamingBubbleId = id;
+      this.bubbles.update((list) => [...list, { id, role: 'inbound', text }]);
+      return;
+    }
+    const targetId = this.streamingBubbleId;
+    this.bubbles.update((list) =>
+      list.map((bubble) =>
+        bubble.id === targetId ? { ...bubble, text: bubble.text + text } : bubble,
+      ),
+    );
   }
 
   private appendBubble(partial: Omit<ChatBubble, 'id'>): void {

@@ -1,12 +1,12 @@
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
+import { provideRouter, Router } from '@angular/router';
 
 import { ChatShell, TURN_IDLE_MS } from './chat-shell';
 import {
   MAX_MESSAGE_LENGTH,
   NETWORK_FAIL,
   PASTE_TOO_LONG,
-  SOON_LABEL,
   UNPARSEABLE_FRAME,
   WS_ALREADY_OPEN,
 } from './chat.copy';
@@ -16,12 +16,14 @@ import { MockWebSocket } from './mock-web-socket';
 describe('ChatShell', () => {
   let fixture: ComponentFixture<ChatShell>;
   let latestSocket: MockWebSocket | null;
+  let router: Router;
 
   beforeEach(async () => {
     latestSocket = null;
     await TestBed.configureTestingModule({
       imports: [ChatShell],
       providers: [
+        provideRouter([]),
         { provide: WS_URL, useValue: 'ws://test.example:8000/ws' },
         {
           provide: WEB_SOCKET_FACTORY,
@@ -32,6 +34,8 @@ describe('ChatShell', () => {
         },
       ],
     }).compileComponents();
+
+    router = TestBed.inject(Router);
 
     fixture = TestBed.createComponent(ChatShell);
     fixture.detectChanges();
@@ -55,7 +59,7 @@ describe('ChatShell', () => {
     expect(shell['inFlight']()).toBe(false);
   });
 
-  it('sends turn_request and renders turn_complete with disabled CTAs', () => {
+  it('sends turn_request and renders turn_complete with clickable CTAs', () => {
     const shell = fixture.componentInstance;
     shell['draft'].set('привет');
     shell['send']();
@@ -84,14 +88,48 @@ describe('ChatShell', () => {
     expect(text).toContain('Tutor');
     expect(text).toContain('Vocabulary');
     expect(text).toContain('Review');
-    expect(text).toContain(SOON_LABEL);
+    expect(text).not.toContain('Скоро');
 
     const ctaButtons = fixture.debugElement.queryAll(By.css('.cta'));
     expect(ctaButtons).toHaveLength(3);
     for (const btn of ctaButtons) {
-      expect((btn.nativeElement as HTMLButtonElement).disabled).toBe(true);
-      expect(btn.attributes['aria-disabled']).toBe('true');
+      expect((btn.nativeElement as HTMLButtonElement).disabled).toBe(false);
+      expect(btn.attributes['aria-disabled']).toBe('false');
     }
+  });
+
+  it('maps Tutor CTA click to tutor_unit intent turn', () => {
+    const shell = fixture.componentInstance;
+    shell['ctas'].set([
+      { id: 'tutor', label: 'Tutor' },
+      { id: 'vocabulary', label: 'Vocabulary' },
+      { id: 'review', label: 'Review' },
+    ]);
+    fixture.detectChanges();
+
+    const tutorBtn = fixture.debugElement.query(By.css('.cta'));
+    tutorBtn.triggerEventHandler('click');
+    fixture.detectChanges();
+
+    expect(latestSocket!.sent).toHaveLength(1);
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+    expect(frame.kind).toBe('turn_request');
+    expect(frame.text).toBe('tutor_unit');
+    expect(shell['inFlight']()).toBe(true);
+    expect(fixture.nativeElement.textContent).not.toContain('tutor_unit');
+  });
+
+  it('navigates to /cefr on cefr CTA click without WS turn', async () => {
+    const navigateSpy = vi.spyOn(router, 'navigateByUrl').mockResolvedValue(true);
+    const shell = fixture.componentInstance;
+    shell['ctas'].set([{ id: 'cefr', label: 'Указать CEFR' }]);
+    fixture.detectChanges();
+
+    fixture.debugElement.query(By.css('.cta')).triggerEventHandler('click');
+    fixture.detectChanges();
+
+    expect(navigateSpy).toHaveBeenCalledWith('/cefr');
+    expect(latestSocket!.sent).toEqual([]);
   });
 
   it('surfaces system error when non-empty ctas map to zero chips', () => {
@@ -117,12 +155,36 @@ describe('ChatShell', () => {
     expect(fixture.debugElement.queryAll(By.css('.cta'))).toHaveLength(0);
   });
 
-  it('ignores token_delta (no bubble)', () => {
+  it('appends token_delta into inbound bubble and skips duplicate turn_complete message', () => {
     const shell = fixture.componentInstance;
-    const before = shell['bubbles']().length;
-    latestSocket!.simulateMessage({ kind: 'token_delta', text: 'stream' });
+    shell['draft'].set('урок');
+    shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+
+    latestSocket!.simulateMessage({
+      kind: 'token_delta',
+      text: 'Разберём unit',
+      turn_id: frame.turn_id,
+    });
     fixture.detectChanges();
-    expect(shell['bubbles']().length).toBe(before);
+    expect(shell['bubbles']().some((b) => b.role === 'inbound' && b.text === 'Разберём unit')).toBe(
+      true,
+    );
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'Разберём unit',
+      ctas: [],
+      clarify: null,
+      backup_notice: null,
+      turn_id: frame.turn_id,
+    });
+    fixture.detectChanges();
+
+    const inbound = shell['bubbles']().filter((b) => b.role === 'inbound');
+    expect(inbound).toHaveLength(1);
+    expect(inbound[0]!.text).toBe('Разберём unit');
+    expect(shell['inFlight']()).toBe(false);
   });
 
   it('blocks second send while in flight', () => {

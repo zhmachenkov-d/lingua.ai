@@ -1,4 +1,4 @@
-"""Thin Router turn: CTA/blank path, sole checkpointer ``aput`` (AD-3, AD-6)."""
+"""Thin Router turn: classify→handoff; patch merge; sole ``aput`` (AD-3, AD-6)."""
 
 from __future__ import annotations
 
@@ -13,9 +13,10 @@ from typing import Any, Final
 from langgraph.checkpoint.base.id import uuid6
 from openai import AsyncOpenAI
 from psycopg import AsyncConnection
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.db.checkpointer import open_checkpointer
-from app.db.config import get_database_url
+from app.db.config import get_database_url, to_sqlalchemy_url
 from app.db.constants import MVP_LEARNER_ID
 from app.llm.adapter import (
     BACKUP_NOTICE,
@@ -23,22 +24,34 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
+from app.review import handle_review_stub
 from app.router.session_mirror import upsert_session_mirror
 from app.schemas.ws import ErrorCode
+from app.tutor import handle_tutor
+from app.vocabulary import handle_vocabulary_stub
 
 logger = logging.getLogger(__name__)
 
-# Fixed RU template — never copy adapter completion text into message.
+# EXPERIENCE RU — blank / unknown; low/tie reuse calm CTA prompt (no extra key).
+BLANK_INPUT: Final = "Напиши сообщение или выбери агента."
+UNKNOWN_INTENT: Final = "Не поняла запрос. Выбери агента."
 CTA_MESSAGE: Final = (
     "Выберите, чем заняться: Tutor (урок), Vocabulary (слова) или Review (повторение)."
 )
-CTAS: Final = ("tutor", "vocabulary", "review")
+
+# Three-agent Router row (blank / unknown / low / tie / empty-rag / no-ready).
+AGENT_CTAS: Final = ("tutor", "vocabulary", "review")
+# Locked set for api↔web contract (includes gate-only ``cefr``).
+KNOWN_CTA_IDS: Final = ("tutor", "vocabulary", "review", "cefr")
+# Backward-compatible alias used by existing tests / contract readers.
+CTAS: Final = AGENT_CTAS
 
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "llm_misconfigured": (
         "Языковая модель не настроена. Проверьте ключ DEEPSEEK_API_KEY."
     ),
-    "llm_unavailable": ("Языковая модель сейчас недоступна. Попробуйте позже."),
+    # EXPERIENCE ``llm-down`` copy; wire code stays llm_unavailable.
+    "llm_unavailable": "Сервис временно недоступен. Попробуй позже.",
     "invalid_turn_request": "Некорректный запрос хода.",
     "checkpointer_write_failed": "Не удалось сохранить состояние сессии.",
     "ws_already_open": (
@@ -47,10 +60,11 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
 }
 
 THREAD_ID: Final = str(MVP_LEARNER_ID)
-# Align with LLM REQUEST_TIMEOUT_SECONDS — hung aput must not pin the WS turn.
 CHECKPOINTER_WRITE_TIMEOUT_SECONDS: Final = 30.0
-# Distinct from bootstrap.BOOTSTRAP_LOCK_KEY; serializes aget→aput on MVP THREAD_ID.
 SNAPSHOT_WRITE_LOCK_KEY: Final = 7_265_300_117_002
+
+_BASE_CHANNELS: Final = ("last_user_text", "active_agent", "turn_at")
+_BASE_CHANNEL_KEYS: Final = frozenset(_BASE_CHANNELS)
 
 
 async def _after_snapshot_aget() -> None:
@@ -66,6 +80,7 @@ class TurnSuccess:
     backup_notice: str | None
     turn_id: str | None
     last_user_text: str
+    emit_token_delta: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,17 +90,35 @@ class TurnError:
     turn_id: str | None
 
 
+def _merge_channel_values(
+    *,
+    prior_values: Mapping[str, Any] | None,
+    last_user_text: str,
+    turn_at: str,
+    active_agent: str | None,
+    session_patch: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Keep prior namespaced keys; overlay base fields + current session_patch."""
+    merged: dict[str, Any] = {}
+    if prior_values:
+        for key, value in prior_values.items():
+            if key not in _BASE_CHANNEL_KEYS:
+                merged[key] = value
+    merged["last_user_text"] = last_user_text
+    merged["active_agent"] = active_agent
+    merged["turn_at"] = turn_at
+    # Replace per top-level domain key (patch wins; absent keys stay from prior).
+    for key, value in session_patch.items():
+        merged[key] = value
+    return merged
+
+
 def _checkpoint_for_snapshot(
     *,
-    last_user_text: str,
+    channel_values: dict[str, Any],
     turn_at: str,
     channel_versions: dict[str, str],
 ) -> dict[str, Any]:
-    channel_values: dict[str, Any] = {
-        "last_user_text": last_user_text,
-        "active_agent": None,
-        "turn_at": turn_at,
-    }
     return {
         "v": 4,
         # uuid6 is time-ordered; aget tips via ORDER BY checkpoint_id DESC.
@@ -127,14 +160,8 @@ def _next_channel_versions(
 async def _snapshot_write_lock(
     database_url: str | None = None,
 ) -> AsyncIterator[None]:
-    """Hold a Postgres advisory lock for the aget→aput critical section.
-
-    Dedicated connection so the lock is process-crossing and independent of the
-    checkpointer saver connection.
-    """
+    """Hold a Postgres advisory lock for the aget→aput critical section."""
     url = database_url if database_url is not None else get_database_url()
-    # Keepalives: lock session is idle while aget/aput use a separate saver conn
-    # (same pattern as bootstrap's advisory-lock connection).
     conn = await AsyncConnection.connect(
         url,
         autocommit=True,
@@ -159,11 +186,13 @@ async def _snapshot_write_lock(
 async def write_turn_snapshot(
     *,
     last_user_text: str,
+    active_agent: str | None = None,
+    session_patch: Mapping[str, Any] | None = None,
     database_url: str | None = None,
 ) -> dict[str, Any]:
-    """Persist thin Router STM snapshot. Sole ``aput`` path in the app."""
+    """Persist Router STM snapshot. Sole ``aput`` path in the app (AD-3)."""
     turn_at = datetime.now(UTC).isoformat()
-    channels = ("last_user_text", "active_agent", "turn_at")
+    patch = dict(session_patch) if session_patch else {}
     config: dict[str, Any] = {
         "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
     }
@@ -173,9 +202,26 @@ async def write_turn_snapshot(
             async with open_checkpointer(database_url) as saver:
                 prior = await saver.aget(config)  # type: ignore[arg-type]
                 await _after_snapshot_aget()
+                prior_values = None
+                if prior is not None:
+                    raw_values = prior.get("channel_values")
+                    if isinstance(raw_values, dict):
+                        prior_values = raw_values
+                channel_values = _merge_channel_values(
+                    prior_values=prior_values,
+                    last_user_text=last_user_text,
+                    turn_at=turn_at,
+                    active_agent=active_agent,
+                    session_patch=patch,
+                )
+                # Advance versions for every key written (base + preserved + patch).
+                namespaced = tuple(
+                    sorted(k for k in channel_values if k not in _BASE_CHANNEL_KEYS)
+                )
+                channels = _BASE_CHANNELS + namespaced
                 versions = _next_channel_versions(saver, prior, channels)
                 checkpoint = _checkpoint_for_snapshot(
-                    last_user_text=last_user_text,
+                    channel_values=channel_values,
                     turn_at=turn_at,
                     channel_versions=versions,
                 )
@@ -232,6 +278,21 @@ async def get_turn_snapshot(
     return dict(values) if isinstance(values, dict) else None
 
 
+@asynccontextmanager
+async def _learner_db_session(
+    database_url: str | None = None,
+) -> AsyncIterator[AsyncSession]:
+    """Ephemeral async session for domain reads (CEFR / Ready corpus)."""
+    url = database_url if database_url is not None else get_database_url()
+    engine = create_async_engine(to_sqlalchemy_url(url))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()
+
+
 async def handle_turn(
     text: str,
     *,
@@ -240,11 +301,19 @@ async def handle_turn(
     http_client: object | None = None,
     llm_client: AsyncOpenAI | None = None,
 ) -> TurnSuccess | TurnError:
-    """Blank → CTA without LLM; non-blank → classify then CTA; persist-then-complete."""
+    """Blank → CTA; classify → domain handoff or three CTAs; persist-then-complete."""
     stripped = text.strip()
     used_backup = False
+    active_agent: str | None = None
+    session_patch: dict[str, Any] = {}
+    emit_token_delta = False
+    message: str
+    ctas: tuple[str, ...]
 
-    if stripped:
+    if not stripped:
+        message = BLANK_INPUT
+        ctas = AGENT_CTAS
+    else:
         try:
             result = await classify_turn(
                 stripped,
@@ -264,21 +333,58 @@ async def handle_turn(
                 turn_id=turn_id,
             )
         except Exception:
-            # Unexpected classify/LLM failures — not snapshot errors.
             return TurnError(
                 code="llm_unavailable",
                 message=ERROR_MESSAGES["llm_unavailable"],
                 turn_id=turn_id,
             )
-        # Skeleton: no domain handoff targets — always CTA.
-        _ = result.handoff
         used_backup = result.used_backup
+        handoff = result.handoff
+
+        if handoff == "tutor_unit":
+            try:
+                async with _learner_db_session(database_url) as session:
+                    outcome = await handle_tutor(session)
+            except Exception:
+                # Tutor/DB path — not an LLM outage; reuse honest non-llm-down code.
+                logger.exception("tutor handoff failed")
+                return TurnError(
+                    code="checkpointer_write_failed",
+                    message=ERROR_MESSAGES["checkpointer_write_failed"],
+                    turn_id=turn_id,
+                )
+            message = outcome.message
+            ctas = outcome.ctas
+            session_patch = dict(outcome.session_patch)
+            active_agent = outcome.active_agent
+            emit_token_delta = outcome.emit_token_delta
+        elif handoff == "vocab_lookup":
+            vocab = handle_vocabulary_stub()
+            message = vocab.message
+            ctas = ()
+            session_patch = dict(vocab.session_patch)
+            active_agent = vocab.active_agent
+        elif handoff == "review_daily":
+            review = handle_review_stub()
+            message = review.message
+            ctas = ()
+            session_patch = dict(review.session_patch)
+            active_agent = review.active_agent
+        elif result.band == "unknown":
+            message = UNKNOWN_INTENT
+            ctas = AGENT_CTAS
+        else:
+            # low / tie — three CTAs; no extra RU key required
+            message = CTA_MESSAGE
+            ctas = AGENT_CTAS
 
     backup_notice = BACKUP_NOTICE if used_backup else None
 
     try:
         await write_turn_snapshot(
             last_user_text=stripped,
+            active_agent=active_agent,
+            session_patch=session_patch,
             database_url=database_url,
         )
     except Exception:
@@ -289,10 +395,11 @@ async def handle_turn(
         )
 
     return TurnSuccess(
-        message=CTA_MESSAGE,
-        ctas=CTAS,
+        message=message,
+        ctas=ctas,
         clarify=None,
         backup_notice=backup_notice,
         turn_id=turn_id,
         last_user_text=stripped,
+        emit_token_delta=emit_token_delta,
     )

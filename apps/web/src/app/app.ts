@@ -1,9 +1,8 @@
 import { Component } from '@angular/core';
-
-import { ChatShell } from './chat/chat-shell';
+import { RouterOutlet } from '@angular/router';
 
 @Component({
-  imports: [ChatShell],
+  imports: [RouterOutlet],
   selector: 'app-root',
   styleUrl: './app.css',
   templateUrl: './app.html',

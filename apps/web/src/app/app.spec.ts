@@ -1,6 +1,8 @@
 import { TestBed } from '@angular/core/testing';
+import { provideRouter, Router } from '@angular/router';
 
 import { App } from './app';
+import { routes } from './app.routes';
 import { WEB_SOCKET_FACTORY, WS_URL } from './chat/chat-ws.tokens';
 import { MockWebSocket } from './chat/mock-web-socket';
 
@@ -9,6 +11,7 @@ describe('App', () => {
     await TestBed.configureTestingModule({
       imports: [App],
       providers: [
+        provideRouter(routes),
         { provide: WS_URL, useValue: 'ws://test.example:8000/ws' },
         {
           provide: WEB_SOCKET_FACTORY,
@@ -25,6 +28,8 @@ describe('App', () => {
 
   it('should render the Russian chat shell, not the CLI welcome', async () => {
     const fixture = TestBed.createComponent(App);
+    const router = TestBed.inject(Router);
+    await router.navigateByUrl('/');
     await fixture.whenStable();
     fixture.detectChanges();
     const compiled = fixture.nativeElement as HTMLElement;

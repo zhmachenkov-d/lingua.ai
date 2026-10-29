@@ -20,9 +20,14 @@
   @if (ctas().length > 0) {
     <div class="cta-row" role="group" aria-label="Агенты">
       @for (cta of ctas(); track cta.id) {
-        <button type="button" class="cta" disabled aria-disabled="true">
+        <button
+          type="button"
+          class="cta"
+          [disabled]="composerDisabled"
+          [attr.aria-disabled]="composerDisabled"
+          (click)="onCtaClick(cta)"
+        >
           <span class="cta__label">{{ cta.label }}</span>
-          <span class="cta__soon">{{ soonLabel }}</span>
         </button>
       }
     </div>

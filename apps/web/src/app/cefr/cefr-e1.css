@@ -1,0 +1,90 @@
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+.e1 {
+  max-width: 28rem;
+  margin: 0 auto;
+  padding: var(--lingua-space-6, 1.5rem) var(--lingua-space-margin-mobile, 1rem);
+  color: var(--lingua-color-on-surface);
+}
+
+.e1__header {
+  margin-bottom: var(--lingua-space-5, 1.25rem);
+}
+
+.e1__brand {
+  margin: 0 0 var(--lingua-space-2, 0.5rem);
+  font-family: var(--lingua-font-brand);
+  font-size: var(--lingua-text-brand-size, 1.5rem);
+  font-weight: var(--lingua-text-brand-weight, 600);
+}
+
+.e1__title {
+  margin: 0 0 var(--lingua-space-2, 0.5rem);
+  font-size: var(--lingua-text-title-size, 1.25rem);
+  font-weight: var(--lingua-text-label-weight, 600);
+}
+
+.e1__lead {
+  margin: 0;
+  color: var(--lingua-color-on-surface-muted);
+  font-size: var(--lingua-text-body-sm-size, 0.9rem);
+}
+
+.e1__form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--lingua-space-3, 0.75rem);
+}
+
+.e1__label {
+  font-weight: var(--lingua-text-label-weight, 600);
+}
+
+.e1__select {
+  padding: var(--lingua-space-3, 0.75rem) var(--lingua-space-4, 1rem);
+  border: 1px solid var(--lingua-color-outline-strong);
+  border-radius: var(--lingua-radius-default, 0.5rem);
+  background: var(--lingua-color-background);
+  color: inherit;
+  font: inherit;
+}
+
+.e1__error {
+  margin: 0;
+  padding: var(--lingua-space-3, 0.75rem);
+  border-radius: var(--lingua-radius-default, 0.5rem);
+  background: var(--lingua-color-error-container);
+  color: var(--lingua-color-on-error-container);
+}
+
+.e1__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--lingua-space-3, 0.75rem);
+  margin-top: var(--lingua-space-2, 0.5rem);
+}
+
+.e1__save {
+  padding: var(--lingua-space-3, 0.75rem) var(--lingua-space-4, 1rem);
+  border: none;
+  border-radius: var(--lingua-radius-default, 0.5rem);
+  background: var(--lingua-color-primary);
+  color: var(--lingua-color-on-primary);
+  font: inherit;
+  font-weight: var(--lingua-text-label-weight, 600);
+  cursor: pointer;
+}
+
+.e1__save:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.e1__back {
+  color: var(--lingua-color-primary);
+  text-decoration: underline;
+}

@@ -55,7 +55,7 @@ export interface ChatBubble {
   text: string;
 }
 
-export type CtaId = 'tutor' | 'vocabulary' | 'review';
+export type CtaId = 'tutor' | 'vocabulary' | 'review' | 'cefr';
 
 export interface CtaChip {
   id: CtaId;

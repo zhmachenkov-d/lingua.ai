@@ -89,6 +89,10 @@
   color: var(--lingua-color-primary);
   font: inherit;
   font-size: var(--lingua-text-body-sm-size);
+  cursor: pointer;
+}
+
+.cta:disabled {
   cursor: not-allowed;
   opacity: 0.7;
 }
@@ -103,11 +107,6 @@
 
 .cta__label {
   font-weight: var(--lingua-text-label-weight);
-}
-
-.cta__soon {
-  font-size: var(--lingua-text-caption-size);
-  color: var(--lingua-color-on-surface-muted);
 }
 
 .banner {
