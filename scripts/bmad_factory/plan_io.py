@@ -3,12 +3,20 @@
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .constants import SHUTDOWN_ERROR, FactoryHalt, log
+
+_OUTPUT_DIRNAME = "_bmad-output"
+_BMAD_CONFIG_LAYERS = (
+    Path("_bmad/config.toml"),
+    Path("_bmad/custom/config.toml"),
+    Path("_bmad/custom/config.user.toml"),
+)
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
 
@@ -215,9 +223,42 @@ def set_plan_status(path: Path, status: str) -> None:
     update_frontmatter_fields(path, {"status": status})
 
 
+def _merge_toml(base: dict[str, Any], over: dict[str, Any]) -> dict[str, Any]:
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge_toml(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _active_initiative_name(project_root: Path) -> str | None:
+    """Return ``core.active_initiative`` from merged BMad config layers, if set."""
+    merged: dict[str, Any] = {}
+    for rel in _BMAD_CONFIG_LAYERS:
+        path = project_root / rel
+        if not path.is_file():
+            continue
+        try:
+            layer = tomllib.loads(path.read_text(encoding="utf-8-sig"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if isinstance(layer, dict):
+            merged = _merge_toml(merged, layer)
+    core = merged.get("core")
+    if not isinstance(core, dict):
+        return None
+    name = core.get("active_initiative")
+    if isinstance(name, str) and name.strip():
+        return name.strip()
+    return None
+
+
 def initiative_dir_for(plan_path: Path, project_root: Path) -> Path:
     root = project_root.resolve()
-    for parent in [plan_path.resolve().parent, *plan_path.resolve().parents]:
+    plan = plan_path.resolve()
+    for parent in [plan.parent, *plan.parents]:
         if parent == root or root not in parent.parents:
             break
         if (parent / "deferred-work.md").is_file():
@@ -227,10 +268,24 @@ def initiative_dir_for(plan_path: Path, project_root: Path) -> Path:
             or parent.name.startswith("initiative")
         ):
             return parent
-    for parent in plan_path.resolve().parents:
+    for parent in plan.parents:
         if parent.name.startswith("initiative") and (parent / "tickets").is_dir():
             return parent
-    raise FactoryHalt(SHUTDOWN_ERROR, f"cannot locate initiative for plan {plan_path}")
+    # Top-level backlog / output-root plans: BMAD puts deferred under
+    # {output}/{active_initiative}/, else {output}/.
+    output = root / _OUTPUT_DIRNAME
+    try:
+        plan.relative_to(output)
+    except ValueError as err:
+        raise FactoryHalt(
+            SHUTDOWN_ERROR, f"cannot locate initiative for plan {plan_path}"
+        ) from err
+    active = _active_initiative_name(root)
+    if active:
+        cand = output / active
+        if cand.is_dir():
+            return cand
+    return output
 
 
 def append_deferred(plan_path: Path, project_root: Path, items: list[Any]) -> int:

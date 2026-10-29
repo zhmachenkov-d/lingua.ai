@@ -3,7 +3,7 @@
 Call ``get_ready_unit_chunks`` with an ``AsyncSession`` and a corpus
 ``unit_ref``. On Ready, you get ordinal-ordered chunks whose vectors and
 ``model_name`` / ``dims`` stamps come from persisted ingest rows (shared
-AD-12 SoT). Missing or non-Ready units yield ``None``.
+AD-12 SoT). Missing, non-Ready, or Ready-with-empty-join units yield ``None``.
 """
 
 from __future__ import annotations
@@ -45,7 +45,8 @@ async def get_ready_unit_chunks(
     """Return Ready chunks+embeddings for ``unit_ref``, else ``None``.
 
     Read-only against ``textbook_unit`` / ``chunk`` / ``embedding``. Does not
-    raise for unknown or non-Ready refs — callers treat ``None`` as absence.
+    raise for unknown, non-Ready, or Ready-with-empty-join refs — callers
+    treat ``None`` as absence.
     """
     unit = await session.scalar(
         select(TextbookUnit).where(TextbookUnit.unit_ref == unit_ref)
@@ -61,6 +62,9 @@ async def get_ready_unit_chunks(
             .order_by(Chunk.ordinal.asc())
         )
     ).all()
+
+    if not rows:
+        return None
 
     chunks = [
         ReadyChunk(

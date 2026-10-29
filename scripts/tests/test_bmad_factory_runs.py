@@ -25,9 +25,14 @@ from bmad_factory.deferred import (
     _handle_bundle_halt,
     _synthetic_ref,
     continue_deferred,
+    find_initiative_ledgers,
     triage_path_for,
 )
-from bmad_factory.plan_io import format_halt_reinvoke_steps
+from bmad_factory.plan_io import (
+    append_deferred,
+    format_halt_reinvoke_steps,
+    initiative_dir_for,
+)
 from bmad_factory.report import RunReport
 from bmad_factory.run_lock import (
     ProjectLock,
@@ -500,6 +505,95 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.resume, "abc-123")
         args2 = parser.parse_args(["--stop", "abc-123"])
         self.assertEqual(args2.stop, "abc-123")
+
+
+class BacklogDeferredHarvestTests(unittest.TestCase):
+    def _write_backlog_plan(self, root: Path) -> Path:
+        backlog = root / "_bmad-output" / "backlog"
+        backlog.mkdir(parents=True, exist_ok=True)
+        plan = backlog / "bug-example-plan.md"
+        plan.write_text(
+            "---\ntitle: example\nstatus: built\n---\n\n# plan\n",
+            encoding="utf-8",
+        )
+        return plan
+
+    def test_harvest_uses_active_initiative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _touch_bmad(root)
+            initiative = root / "_bmad-output" / "initiative-mvp"
+            initiative.mkdir(parents=True, exist_ok=True)
+            (initiative / "deferred-work.md").write_text(
+                "# Deferred work\n", encoding="utf-8"
+            )
+            user_cfg = root / "_bmad" / "custom"
+            user_cfg.mkdir(parents=True, exist_ok=True)
+            (root / "_bmad" / "config.toml").write_text(
+                '[core]\nproject_name = "t"\n'
+                'output_folder = "{project-root}/_bmad-output"\n',
+                encoding="utf-8",
+            )
+            (user_cfg / "config.user.toml").write_text(
+                '[core]\nactive_initiative = "initiative-mvp"\n',
+                encoding="utf-8",
+            )
+            plan = self._write_backlog_plan(root)
+            self.assertEqual(initiative_dir_for(plan, root), initiative.resolve())
+            n = append_deferred(
+                plan,
+                root,
+                [{"summary": "later", "evidence": "from review", "severity": "medium"}],
+            )
+            self.assertEqual(n, 1)
+            ledger = (initiative / "deferred-work.md").read_text(encoding="utf-8")
+            self.assertIn("summary: later", ledger)
+            self.assertFalse((root / "_bmad-output" / "deferred-work.md").is_file())
+
+    def test_harvest_falls_back_to_output_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _touch_bmad(root)
+            (root / "_bmad-output").mkdir(parents=True, exist_ok=True)
+            (root / "_bmad" / "config.toml").write_text(
+                '[core]\nproject_name = "t"\n'
+                'output_folder = "{project-root}/_bmad-output"\n',
+                encoding="utf-8",
+            )
+            plan = self._write_backlog_plan(root)
+            self.assertEqual(
+                initiative_dir_for(plan, root),
+                (root / "_bmad-output").resolve(),
+            )
+            n = append_deferred(
+                plan,
+                root,
+                [{"summary": "orphan", "evidence": "no active initiative"}],
+            )
+            self.assertEqual(n, 1)
+            ledger = (root / "_bmad-output" / "deferred-work.md").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("summary: orphan", ledger)
+
+    def test_find_initiative_ledgers_under_bmad_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _touch_bmad(root)
+            initiative = root / "_bmad-output" / "initiative-mvp"
+            initiative.mkdir(parents=True, exist_ok=True)
+            ledger = initiative / "deferred-work.md"
+            ledger.write_text("# Deferred work\n", encoding="utf-8")
+            # Noise that must be ignored
+            noise = root / ".bmad-factory" / "runs" / "x"
+            noise.mkdir(parents=True, exist_ok=True)
+            (noise / "deferred-work.md").write_text("# no\n", encoding="utf-8")
+            (root / "elsewhere").mkdir()
+            (root / "elsewhere" / "deferred-work.md").write_text(
+                "# no\n", encoding="utf-8"
+            )
+            found = find_initiative_ledgers(root)
+            self.assertEqual(found, [ledger])
 
 
 if __name__ == "__main__":

@@ -81,10 +81,13 @@ class SweepTriage:
 def find_initiative_ledgers(
     project_root: Path, *, ledger_name: str = "deferred-work.md"
 ) -> list[Path]:
+    """Locate deferred-work ledgers under ``_bmad-output`` (skip factory runs)."""
     found: list[Path] = []
-    for path in project_root.rglob(ledger_name):
-        parts = set(path.parts)
-        if POLICY_DIRNAME in parts or "_bmad-output" in parts:
+    output = project_root / "_bmad-output"
+    if not output.is_dir():
+        return found
+    for path in output.rglob(ledger_name):
+        if POLICY_DIRNAME in path.parts:
             continue
         if path.is_file():
             found.append(path)
