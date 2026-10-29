@@ -121,6 +121,27 @@ def upsert_not_ready_unit(
     return unit
 
 
+def upsert_review_unit(
+    session: Session,
+    *,
+    textbook_id: str,
+    unit_ref: str,
+    gate_reason: str,
+    gate_metrics: dict[str, Any],
+) -> TextbookUnit:
+    """Persist soft Review: status Review, metrics, no chunks/embeddings."""
+    upsert_textbook(session, textbook_id=textbook_id)
+    unit = _get_or_create_unit(
+        session, textbook_id=textbook_id, unit_ref=unit_ref
+    )
+    unit.status = "Review"
+    unit.gate_reason = gate_reason
+    unit.gate_metrics = gate_metrics
+    _clear_unit_chunks(session, unit)
+    session.flush()
+    return unit
+
+
 def upsert_ready_unit(
     session: Session,
     *,

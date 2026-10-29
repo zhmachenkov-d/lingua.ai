@@ -16,6 +16,7 @@ from app.persist.store import (
     smoke_select_unit,
     upsert_not_ready_unit,
     upsert_ready_unit,
+    upsert_review_unit,
     upsert_textbook,
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     "to_sqlalchemy_url",
     "upsert_not_ready_unit",
     "upsert_ready_unit",
+    "upsert_review_unit",
     "upsert_textbook",
 ]
