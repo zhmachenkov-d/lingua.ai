@@ -12,7 +12,7 @@ import yaml
 from .agent import agent_call_limits, run_cursor_agent, usage_dict
 from .constants import SHUTDOWN_ERROR, FactoryHalt, log
 from .pick import CLOSURE_REJECTED, EPIC_CLOSED
-from .plan_io import read_frontmatter
+from .plan_io import load_frontmatter_data, read_frontmatter
 from .policy import Policy
 from .report import RunReport, UnitReport, log_cumulative_tokens
 from .run_state import RunState, append_journal, save_run
@@ -180,7 +180,7 @@ def update_frontmatter_fields(path: Path, updates: dict[str, Any]) -> None:
     if end < 0:
         raise FactoryHalt(SHUTDOWN_ERROR, f"frontmatter not closed: {path}")
     block = text[3:end].strip("\n")
-    data = yaml.safe_load(block) or {}
+    data = load_frontmatter_data(block, path=path) or {}
     if not isinstance(data, dict):
         raise FactoryHalt(SHUTDOWN_ERROR, f"frontmatter is not a mapping: {path}")
     for key, value in updates.items():

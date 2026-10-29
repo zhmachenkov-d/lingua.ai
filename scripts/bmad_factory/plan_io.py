@@ -10,6 +10,15 @@ import yaml
 from .constants import SHUTDOWN_ERROR, FactoryHalt, log
 
 
+def load_frontmatter_data(block: str, *, path: Path) -> Any:
+    try:
+        return yaml.safe_load(block)
+    except yaml.YAMLError as err:
+        raise FactoryHalt(
+            SHUTDOWN_ERROR, f"invalid YAML frontmatter in {path}: {err}"
+        ) from err
+
+
 def read_frontmatter(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}
@@ -20,7 +29,7 @@ def read_frontmatter(path: Path) -> dict[str, Any]:
     if end < 0:
         return {}
     block = text[3:end].strip("\n")
-    data = yaml.safe_load(block) or {}
+    data = load_frontmatter_data(block, path=path) or {}
     return data if isinstance(data, dict) else {}
 
 
@@ -164,7 +173,7 @@ def set_plan_status(path: Path, status: str) -> None:
     if end < 0:
         raise FactoryHalt(SHUTDOWN_ERROR, f"plan frontmatter not closed: {path}")
     block = text[3:end].strip("\n")
-    data = yaml.safe_load(block) or {}
+    data = load_frontmatter_data(block, path=path) or {}
     if not isinstance(data, dict):
         raise FactoryHalt(SHUTDOWN_ERROR, f"plan frontmatter is not a mapping: {path}")
     data["status"] = status
