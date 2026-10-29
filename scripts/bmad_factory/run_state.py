@@ -59,7 +59,7 @@ class RunState:
     pause_reason: str | None = None
     pause_detail: str | None = None
     pause_ticket: str | None = None
-    mode: str = "ticket"  # ticket | epic | backlog | deferred
+    mode: str = "ticket"  # ticket | epic | bugs | spikes | deferred (| backlog legacy)
     ticket: str | None = None
     epic: str | None = None
     model: str = "auto"
@@ -346,10 +346,13 @@ def find_resumable_run(
     epic: str | None = None,
 ) -> RunState | None:
     """Latest paused or stale run matching mode + scope (for halt+re-invoke)."""
+    mode_aliases = {mode}
+    if mode == "bugs":
+        mode_aliases.add("backlog")  # legacy mode name
     for state in list_runs(project_root):
         if not is_resumable_state(project_root, state):
             continue
-        if state.mode != mode:
+        if state.mode not in mode_aliases:
             continue
         if mode == "ticket" and (state.ticket or "") != (ticket or ""):
             continue

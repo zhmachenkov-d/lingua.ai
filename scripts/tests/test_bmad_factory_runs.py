@@ -28,6 +28,7 @@ from bmad_factory.deferred import (
     find_initiative_ledgers,
     triage_path_for,
 )
+from bmad_factory.pick import PickScope
 from bmad_factory.plan_io import (
     append_deferred,
     format_halt_reinvoke_steps,
@@ -55,11 +56,47 @@ from bmad_factory.run_state import (
     pause_run,
     save_run,
 )
-from bmad_factory.status_cmd import collect_status, format_status_human
+from bmad_factory.status_cmd import (
+    _leaf_type_counts,
+    collect_status,
+    format_status_human,
+)
+from bmad_factory.ticketmodel import TicketRow
 
 
 def _touch_bmad(root: Path) -> None:
     (root / "_bmad").mkdir(parents=True, exist_ok=True)
+
+
+def _row(
+    *, type: str = "story", refined: bool = True, state: str = "backlog"
+) -> TicketRow:
+    return TicketRow(
+        ref=f"{type}-x.md",
+        epic="backlog",
+        id="1",
+        file=f"{type}-x.md",
+        type=type,
+        tracker_id="",
+        title="x",
+        status="",
+        tracker_status="",
+        state=state,
+        assignee="",
+        hitl=False,
+        risk="medium",
+        refine=True,
+        refined=refined,
+        blocked_at="",
+        blocked_reason="",
+        after=(),
+        gated_by=(),
+        waiting_on=(),
+        unknown="",
+        plan_checkpoint=False,
+        done_checkpoint=False,
+        drift=False,
+    )
 
 
 def _hold_run_lock(
@@ -183,7 +220,7 @@ class RunLockTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _touch_bmad(root)
-            state = create_run(root, mode="backlog", model="auto")
+            state = create_run(root, mode="bugs", model="auto")
             project = ProjectLock(root)
             run = RunLock(root, state.run_id)
             project.acquire(run_id=state.run_id)
@@ -223,6 +260,18 @@ class ClassifyTests(unittest.TestCase):
 
 
 class ResumeGateTests(unittest.TestCase):
+    def test_find_resumable_bugs_matches_legacy_backlog(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _touch_bmad(root)
+            legacy = create_run(root, mode="backlog", model="auto")
+            pause_run(root, legacy, reason="ticket-hitl")
+            found = find_resumable_run(root, mode="bugs")
+            self.assertIsNotNone(found)
+            assert found is not None
+            self.assertEqual(found.run_id, legacy.run_id)
+            self.assertEqual(found.mode, "backlog")
+
     def test_find_resumable_includes_stale(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -485,6 +534,94 @@ class StatusEnrichmentTests(unittest.TestCase):
             self.assertIn("summary:", human)
             self.assertIn("stale", human)
 
+    def test_leaf_type_counts_and_human_board(self) -> None:
+        tickets = [
+            {
+                "type": "story",
+                "refined": True,
+                "state": "done",
+                "ref": "1.1",
+            },
+            {
+                "type": "story",
+                "refined": False,
+                "state": "backlog",
+                "ref": "1.2",
+            },
+            {
+                "type": "bug",
+                "refined": False,
+                "state": "in-progress",
+                "ref": "bug-a.md",
+            },
+            {
+                "type": "spike",
+                "refined": True,
+                "state": "done",
+                "ref": "spike-a.md",
+            },
+        ]
+        by_type = _leaf_type_counts(tickets)
+        self.assertEqual(by_type["story"]["total"], 2)
+        self.assertEqual(by_type["story"]["refined"], 1)
+        self.assertEqual(by_type["story"]["not_refined"], 1)
+        self.assertEqual(by_type["story"]["done"], 1)
+        self.assertEqual(by_type["story"]["not_done"], 1)
+        self.assertEqual(by_type["bug"]["total"], 1)
+        self.assertEqual(by_type["bug"]["not_refined"], 1)
+        self.assertEqual(by_type["bug"]["not_done"], 1)
+        self.assertEqual(by_type["spike"]["done"], 1)
+        self.assertEqual(by_type["spike"]["total"], 1)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _touch_bmad(root)
+            with (
+                mock.patch(
+                    "bmad_factory.status_cmd.tickets_status",
+                    return_value={
+                        "folder": "initiative-mvp",
+                        "counts": {"total": 3},
+                        "epics": [],
+                        "tickets": tickets[:2] + [tickets[2]],
+                        "backlog": {
+                            "folder": "backlog",
+                            "counts": {"total": 1},
+                            "tickets": [tickets[3]],
+                        },
+                    },
+                ),
+                mock.patch(
+                    "bmad_factory.status_cmd.list_open_deferred", return_value=[]
+                ),
+            ):
+                data = collect_status(root)
+            board = data["board"]
+            self.assertIn("by_leaf_type", board)
+            self.assertEqual(board["by_leaf_type"]["story"]["total"], 2)
+            self.assertEqual(board["by_leaf_type"]["bug"]["total"], 1)
+            self.assertEqual(board["backlog_by_leaf_type"]["spike"]["total"], 1)
+            human = format_status_human(data)
+            self.assertIn("by type:", human)
+            self.assertIn(
+                "story: refined=1 not_refined=1 done=1 not_done=1 total=2", human
+            )
+            self.assertIn("backlog by type:", human)
+            self.assertIn(
+                "spike: refined=1 not_refined=0 done=1 not_done=0 total=1", human
+            )
+
+
+class PickScopeLeafTypeTests(unittest.TestCase):
+    def test_backlog_filters_by_leaf_type(self) -> None:
+        bugs = PickScope(backlog=True, leaf_type="bug")
+        spikes = PickScope(backlog=True, leaf_type="spike")
+        self.assertTrue(bugs.admits(_row(type="bug")))
+        self.assertFalse(bugs.admits(_row(type="spike")))
+        self.assertTrue(spikes.admits(_row(type="spike")))
+        self.assertFalse(spikes.admits(_row(type="bug")))
+        self.assertTrue(PickScope(backlog=True).admits(_row(type="story")))
+
 
 class HaltStepsTests(unittest.TestCase):
     def test_mentions_resume_and_stop(self) -> None:
@@ -505,6 +642,20 @@ class CliParserTests(unittest.TestCase):
         self.assertEqual(args.resume, "abc-123")
         args2 = parser.parse_args(["--stop", "abc-123"])
         self.assertEqual(args2.stop, "abc-123")
+
+    def test_bugs_and_spikes_flags(self) -> None:
+        parser = cli_mod.build_parser()
+        bugs = parser.parse_args(["--bugs"])
+        self.assertTrue(bugs.bugs)
+        self.assertFalse(bugs.spikes)
+        spikes = parser.parse_args(["--spikes"])
+        self.assertTrue(spikes.spikes)
+        self.assertFalse(spikes.bugs)
+        with mock.patch("sys.stderr", new=mock.Mock()):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["--bugs", "--spikes"])
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["--backlog"])
 
 
 class BacklogDeferredHarvestTests(unittest.TestCase):

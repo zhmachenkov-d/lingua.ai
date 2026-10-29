@@ -1,4 +1,4 @@
-"""CLI: --ticket / --epic / --backlog / --deferred / --resume / --stop / --status."""
+"""CLI: --ticket / --epic / --bugs / --spikes / --deferred / --resume / --stop / --status."""
 
 from __future__ import annotations
 
@@ -91,7 +91,7 @@ def resolve_project_root(raw: str | None) -> Path:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
-            "BMAD factory — lean autonomous ticket/epic/backlog/deferred loop. "
+            "BMAD factory — lean autonomous ticket/epic/bugs/spikes/deferred loop. "
             "HITL gates halt with next steps; re-invoke the same CLI args or "
             "use --resume RUN_ID to continue."
         )
@@ -100,9 +100,14 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--ticket", metavar="REF", help="build a single ticket")
     g.add_argument("--epic", metavar="REF", help="build ready tickets in an epic")
     g.add_argument(
-        "--backlog",
+        "--bugs",
         action="store_true",
-        help="build items from the initiative nested backlog/",
+        help="build bug leaves from the initiative nested backlog/",
+    )
+    g.add_argument(
+        "--spikes",
+        action="store_true",
+        help="build spike leaves from the initiative nested backlog/",
     )
     g.add_argument(
         "--deferred",
@@ -206,9 +211,14 @@ def _finish_report(report: RunReport, *, as_json: bool) -> int:
     return 1
 
 
-def _pick_scope(*, ticket: str | None, epic: str | None, backlog: bool) -> PickScope:
-    if backlog:
-        return PickScope(backlog=True)
+def _pick_scope(
+    *,
+    ticket: str | None,
+    epic: str | None,
+    leaf_type: str = "",
+) -> PickScope:
+    if leaf_type:
+        return PickScope(backlog=True, leaf_type=leaf_type)
     if ticket:
         return PickScope(ref=ticket)
     if epic:
@@ -241,8 +251,10 @@ def _cli_args_label(args: argparse.Namespace, run_state: RunState | None = None)
         return f"--ticket {args.ticket}"
     if args.epic:
         return f"--epic {args.epic}"
-    if args.backlog:
-        return "--backlog"
+    if getattr(args, "bugs", False):
+        return "--bugs"
+    if getattr(args, "spikes", False):
+        return "--spikes"
     if args.deferred:
         return "--deferred"
     if getattr(args, "resume", None):
@@ -311,7 +323,7 @@ def _views_for_mode(
 ) -> tuple[NextView, StatusView]:
     next_view = load_next_view(project_root, policy=policy)
     status_view = load_status_view(project_root, policy=policy)
-    if mode != "backlog":
+    if mode not in {"bugs", "spikes", "backlog"}:
         return next_view, status_view
     if next_view.backlog_error:
         raise FactoryHalt(
@@ -331,6 +343,14 @@ def _views_for_mode(
     return next_view.backlog, status_view.backlog
 
 
+def _leaf_type_for_mode(mode: str) -> str:
+    if mode in {"bugs", "backlog"}:
+        return "bug"
+    if mode == "spikes":
+        return "spike"
+    return ""
+
+
 def _execute_pick_loop(
     *,
     project_root: Path,
@@ -342,10 +362,10 @@ def _execute_pick_loop(
     no_push: bool,
     ticket: str | None,
     epic: str | None,
-    backlog: bool,
+    leaf_type: str,
     cli_label: str,
 ) -> None:
-    scope = _pick_scope(ticket=ticket, epic=epic, backlog=backlog)
+    scope = _pick_scope(ticket=ticket, epic=epic, leaf_type=leaf_type)
     mode = run_state.mode
 
     while True:
@@ -680,7 +700,7 @@ def _continue_run(
         no_push=run_state.no_push,
         ticket=run_state.ticket if mode == "ticket" else None,
         epic=run_state.epic if mode == "epic" else None,
-        backlog=mode == "backlog",
+        leaf_type=_leaf_type_for_mode(mode),
         cli_label=cli_label,
     )
 
@@ -777,8 +797,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         mode = "ticket"
     elif args.epic:
         mode = "epic"
+    elif args.spikes:
+        mode = "spikes"
     else:
-        mode = "backlog"
+        mode = "bugs"
 
     existing = find_resumable_run(
         project_root, mode=mode, ticket=args.ticket, epic=args.epic

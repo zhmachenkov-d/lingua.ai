@@ -6,7 +6,7 @@
 #   "pyyaml",
 # ]
 # ///
-"""BMAD factory — lean autonomous ticket/epic/backlog/deferred orchestrator.
+"""BMAD factory — lean autonomous ticket/epic/bugs/spikes/deferred orchestrator.
 
 Thin entrypoint — implementation lives in ``scripts/bmad_factory/``.
 """

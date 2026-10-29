@@ -66,7 +66,8 @@ For an unattended loop over the BMAD v7 ticket tree, run:
 ```bash
 uv run scripts/bmad_factory.py --ticket 1.2
 uv run scripts/bmad_factory.py --epic epic-cart
-uv run scripts/bmad_factory.py --backlog
+uv run scripts/bmad_factory.py --bugs
+uv run scripts/bmad_factory.py --spikes
 uv run scripts/bmad_factory.py --deferred
 uv run scripts/bmad_factory.py --resume <run_id>
 uv run scripts/bmad_factory.py --status

@@ -126,9 +126,12 @@ class PickScope:
     epic: str = ""
     ref: str = ""
     backlog: bool = False
+    leaf_type: str = ""
 
     def admits(self, row: TicketRow) -> bool:
         if self.backlog:
+            if self.leaf_type and row.type != self.leaf_type:
+                return False
             return True
         if self.epic and row.epic != self.epic:
             return False
@@ -167,7 +170,9 @@ def wants_thorough(thorough_review: str, risk: str) -> bool:
     return thorough_review == THOROUGH_HIGH_RISK and risk.strip().lower() == RISK_HIGH
 
 
-def dispatch_invocation(skill: str, ref: str, *, thorough: bool, plan_halt: bool) -> str:
+def dispatch_invocation(
+    skill: str, ref: str, *, thorough: bool, plan_halt: bool
+) -> str:
     line = f"/{skill} ticket {ref}"
     if thorough:
         line += " thorough"
@@ -186,12 +191,16 @@ def build_order(status_view: StatusView) -> dict[str, int]:
 
 def epic_finished(status_view: StatusView, slug: str) -> bool:
     rows = [t for t in status_view.tickets if t.epic == slug]
-    return bool(rows) and all(t.status == "built" or t.state in _TICKET_FINISHED for t in rows)
+    return bool(rows) and all(
+        t.status == "built" or t.state in _TICKET_FINISHED for t in rows
+    )
 
 
 def _ordered(rows: Sequence[TicketRow], rank: Mapping[str, int]) -> list[TicketRow]:
     last = len(rank)
-    keyed = sorted(enumerate(rows), key=lambda p: (rank.get(row_label(p[1]), last), p[0]))
+    keyed = sorted(
+        enumerate(rows), key=lambda p: (rank.get(row_label(p[1]), last), p[0])
+    )
     return [row for _, row in keyed]
 
 
@@ -209,7 +218,9 @@ def _awaiting_closure(status_view: StatusView) -> list[str]:
 def _unbroken_epics(status_view: StatusView) -> list[EpicRow]:
     with_tickets = {t.epic for t in status_view.tickets}
     return [
-        e for e in status_view.epics if e.status not in EPIC_CLOSED and e.slug not in with_tickets
+        e
+        for e in status_view.epics
+        if e.status not in EPIC_CLOSED and e.slug not in with_tickets
     ]
 
 
@@ -242,7 +253,10 @@ def _rejected_gate(
     for epic in status_view.epics:
         if epic.slug == row.epic:
             return None
-        if epic_closures.get(epic.slug) == CLOSURE_REJECTED and epic.status not in EPIC_CLOSED:
+        if (
+            epic_closures.get(epic.slug) == CLOSURE_REJECTED
+            and epic.status not in EPIC_CLOSED
+        ):
             return epic.slug
     return None
 
@@ -258,15 +272,23 @@ def decide_pick(
     acked: Sequence[str] | frozenset[str] = (),
 ) -> PickDecision:
     """Pick the next unit. When ``scope.backlog``, skip epic-closure / unbroken gates."""
-    touched = {key: phase for key, phase in task_phases.items() if phase != Phase.ESCALATED}
+    touched = {
+        key: phase for key, phase in task_phases.items() if phase != Phase.ESCALATED
+    }
     rank = build_order(status_view)
     notes: list[PickNote] = []
 
     def scoped(*groups: Sequence[TicketRow]) -> list[TicketRow]:
-        return _ordered([row for group in groups for row in group if scope.admits(row)], rank)
+        return _ordered(
+            [row for group in groups for row in group if scope.admits(row)], rank
+        )
 
-    foreign = [row for row in scoped(next_view.in_progress) if row_label(row) not in touched]
-    notes.extend(PickNote(NOTE_FOREIGN_ACTIVE, row_label(row), row.status) for row in foreign)
+    foreign = [
+        row for row in scoped(next_view.in_progress) if row_label(row) not in touched
+    ]
+    notes.extend(
+        PickNote(NOTE_FOREIGN_ACTIVE, row_label(row), row.status) for row in foreign
+    )
 
     candidates = scoped(next_view.ready_to_refine, next_view.ready_to_start)
     for row in candidates:
@@ -327,7 +349,9 @@ def decide_pick(
     awaiting = (
         []
         if scope.backlog
-        else [slug for slug in _awaiting_closure(status_view) if scope.admits_epic(slug)]
+        else [
+            slug for slug in _awaiting_closure(status_view) if scope.admits_epic(slug)
+        ]
     )
     for row in blocked:
         for wait in row.waiting_on:
@@ -387,7 +411,9 @@ def decide_pick(
                 f"every ticket of {awaiting[0]} is done; close {awaiting[0]}",
                 held_notes,
             )
-        unbroken = [e for e in _unbroken_epics(status_view) if scope.admits_epic(e.slug)]
+        unbroken = [
+            e for e in _unbroken_epics(status_view) if scope.admits_epic(e.slug)
+        ]
         if unbroken:
             first = unbroken[0]
             why = (
@@ -395,5 +421,7 @@ def decide_pick(
                 if first.folder is None
                 else "is open but has no tickets: break it down or close it"
             )
-            return Halt(HALT_STALLED, first.slug, None, f"{first.slug} {why}", held_notes)
+            return Halt(
+                HALT_STALLED, first.slug, None, f"{first.slug} {why}", held_notes
+            )
     return Skip(SKIP_EMPTY, notes=held_notes)
