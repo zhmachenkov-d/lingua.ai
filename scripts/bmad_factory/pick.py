@@ -384,8 +384,7 @@ def decide_pick(
                 HALT_AWAITING_CLOSURE,
                 awaiting[0],
                 None,
-                f"every ticket of {awaiting[0]} is done; close {awaiting[0]} "
-                f"(run bmad-retrospective, then re-invoke; use -y to ack)",
+                f"every ticket of {awaiting[0]} is done; close {awaiting[0]}",
                 held_notes,
             )
         unbroken = [e for e in _unbroken_epics(status_view) if scope.admits_epic(e.slug)]

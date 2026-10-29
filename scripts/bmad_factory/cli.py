@@ -21,8 +21,12 @@ from .constants import (
     log,
 )
 from .deferred import continue_deferred
+from .epic_closure import ACCEPT_VERDICTS, process_epic_closure
 from .pick import (
+    CLOSURE_REJECTED,
     EPIC_CLOSED,
+    HALT_AWAITING_CLOSURE,
+    HALT_EPIC_REJECTED,
     Dispatch,
     Halt,
     Phase,
@@ -372,6 +376,65 @@ def _execute_pick_loop(
             return
 
         if isinstance(decision, Halt):
+            if decision.cause == HALT_AWAITING_CLOSURE and decision.key:
+                log.info(
+                    "pick epic-boundary auto-closure key=%s detail=%s",
+                    decision.key,
+                    decision.detail,
+                )
+                result = process_epic_closure(
+                    project_root=project_root,
+                    epic_slug=decision.key,
+                    report=report,
+                    policy=policy,
+                    run_state=run_state,
+                    model=model,
+                    dry_run=dry_run,
+                )
+                if dry_run:
+                    report.shutdown = SHUTDOWN_COMPLETED
+                    run_state.status = "completed"
+                    save_run(project_root, run_state)
+                    return
+                if result.closed:
+                    verdict = result.verdict or "accepted"
+                    run_state.ticket_epic_closures[decision.key] = verdict
+                    if decision.key not in run_state.ticket_epic_closure_acked:
+                        run_state.ticket_epic_closure_acked.append(decision.key)
+                    save_run(project_root, run_state)
+                    continue
+                refuse_verdict = result.verdict
+                if refuse_verdict in ACCEPT_VERDICTS:
+                    # Close failed after an accepting verdict — keep verdict, do not ack.
+                    run_state.ticket_epic_closures[decision.key] = refuse_verdict
+                else:
+                    run_state.ticket_epic_closures[decision.key] = CLOSURE_REJECTED
+                detail = result.detail or decision.detail
+                log.info(
+                    "pick halt cause=%s stage=%s key=%s detail=%s",
+                    HALT_EPIC_REJECTED,
+                    decision.stage,
+                    decision.key,
+                    detail,
+                )
+                pause_run(
+                    project_root,
+                    run_state,
+                    reason=decision.stage,
+                    detail=detail,
+                    ticket=decision.key or None,
+                )
+                report.shutdown = HALT_EPIC_REJECTED
+                report.shutdown_detail = detail
+                report.next_steps = format_halt_reinvoke_steps(
+                    detail=detail,
+                    cli_args=cli_label,
+                    model=model,
+                    run_id=run_state.run_id,
+                )
+                save_run(project_root, run_state)
+                raise FactoryHalt(HALT_EPIC_REJECTED, detail)
+
             log.info(
                 "pick halt cause=%s stage=%s key=%s detail=%s",
                 decision.cause,

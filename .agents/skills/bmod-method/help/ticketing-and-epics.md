@@ -24,6 +24,6 @@ A tree in the earlier layout, with `tickets.toml` and epic folders directly in t
 
 Slicing writes each epic thin, with `refined: false`; refining it is its own stage before its stories are planned (`help/planning-skills.md`). Work bigger than one initiative gets a parent initiative whose breakdown lists child initiatives instead of epics.
 
-Plans own status and baseline evidence and stay local on every store. Build stops at `built`; the user or orchestrator marks `done`. Code review appends dated findings to the plan without changing status. Retrospective writes `epic-<slug>-retrospective.md` directly in the epic, proposing action items without creating tickets or closing it. Keep completed plans as live state and historical evidence.
+Plans own status and baseline evidence and stay local on every store. Build stops at `built`; the user or orchestrator marks `done`. Code review appends dated findings to the plan without changing status. Retrospective writes `epic-<slug>-retrospective.md` with machine-readable `verdict`, `closure`, and `action_items`. The skill itself does not close the epic or create tickets; `bmad_factory` (unattended) or Sofia Closure validate (interactive) closes on `closure: recommended` and materializes ticketable action items into `_bmad-output/backlog/`. Keep completed plans as live state and historical evidence.
 
 Use `help/ticketing-setup.md` for setup and `help/unattended-builds.md` for explicit Build Auto dispatch. Tracker stores remain lightly tested.

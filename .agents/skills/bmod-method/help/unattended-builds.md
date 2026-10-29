@@ -57,7 +57,7 @@ When review halts on `intent gap`, the run saves the attempted change as a patch
 - `deferred` in the frontmatter: real findings that were not this ticket's problem. Nothing files them; the user decides whether to make tickets.
 - `Auto Run Result`: summary, review findings, verification, residual risks.
 - The run commits locally and never pushes.
-- After the epic's last ticket, recommend `bmad-retrospective`.
+- After the epic's last ticket, `bmad_factory` runs headless `bmad-retrospective` itself (see Ticket-tree dispatcher).
 
 ## Ticket-tree dispatcher
 
@@ -72,7 +72,7 @@ uv run scripts/bmad_factory.py --resume <run_id>
 uv run scripts/bmad_factory.py --status
 ```
 
-The dispatcher owns queueing (`decide_pick`), gates, verify, commit, and retries. Cursor SDK agents run `bmad-build-auto` / review / retrospective / sweep triage. It does not use tmux or coding-agent CLIs. Policy lives at `.bmad-factory/policy.toml` (`[tickets] mark_done`, `thorough_review`, `[limits] agent_timeout_s` / `agent_max_tokens`).
+The dispatcher owns queueing (`decide_pick`), gates, verify, commit, and retries. Cursor SDK agents run `bmad-build-auto` / review / retrospective / sweep triage. At an epic boundary (every ticket `done`/`dropped`, epic still open) it runs headless `bmad-retrospective -H <epic>`, then closes the epic on `closure: recommended` (`accepted` / `accepted-with-open-items`) and materializes `fix-now` / `defer` `action_items` into `_bmad-output/backlog/`, or pauses with Acceptance verdict detail on `closure: refused` / `rejected`. It does not use tmux or coding-agent CLIs. Policy lives at `.bmad-factory/policy.toml` (`[tickets] mark_done`, `thorough_review`, `[limits] agent_timeout_s` / `agent_max_tokens`).
 
 ## When it fits
 

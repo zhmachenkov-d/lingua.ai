@@ -60,7 +60,10 @@ An item is a set entry, a tree epic, or a parent's child initiative.
 
 ## Closure
 
-- Verify the container's Done when, requirements, constraints and companions against implementation evidence, not child status; explain dropped work and confirm remaining scope with the user.
+- Require `epic-<slug>-retrospective.md` in the epic folder with a parsed frontmatter `verdict` (and `closure` when present). Missing or unreadable retro: **refuse** close; tell the user to run `bmad-retrospective` first.
+- `closure: recommended` / `verdict` `accepted` or `accepted-with-open-items`: Done when is already judged by the retro — confirm briefly with the user, cite the retro path and verdict, then set epic `status: done` (and tracker/`tracker_status` when the store needs it). Offer to materialize outstanding `fix-now` / `defer` `action_items` into `_bmad-output/backlog/` when the factory has not already (marker `retro:<epic-slug>:<id>` in Notes).
+- `closure: refused` / `verdict` `rejected` or missing: **refuse** close; show the Acceptance verdict section (and open action items). Do not set `status: done` unless the user explicitly overrides and a dated Decision line in the epic Notes records why.
+- When unattended `bmad_factory` already closed the epic after a headless retro, Closure is a no-op check: report already `done`, the retro verdict, and how many backlog tickets carry the retro marker.
 
 {% if workflow.checks.closure %}
 {{ workflow.checks.closure }}
