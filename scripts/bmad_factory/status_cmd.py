@@ -21,6 +21,53 @@ from .run_state import (
 )
 from .tickets_io import tickets_status
 
+LEAF_TYPES = ("story", "spike", "bug")
+
+
+def _leaf_type_counts(tickets: list[Any]) -> dict[str, dict[str, int]]:
+    """Aggregate refined/done/total counts for each BMAD leaf type."""
+    out: dict[str, dict[str, int]] = {
+        kind: {
+            "refined": 0,
+            "not_refined": 0,
+            "done": 0,
+            "not_done": 0,
+            "total": 0,
+        }
+        for kind in LEAF_TYPES
+    }
+    for row in tickets:
+        if not isinstance(row, dict):
+            continue
+        kind = str(row.get("type") or "").strip()
+        if kind not in out:
+            continue
+        bucket = out[kind]
+        bucket["total"] += 1
+        if row.get("refined") is True:
+            bucket["refined"] += 1
+        else:
+            bucket["not_refined"] += 1
+        if str(row.get("state") or "") == "done":
+            bucket["done"] += 1
+        else:
+            bucket["not_done"] += 1
+    return out
+
+
+def _format_leaf_type_counts(by_type: dict[str, dict[str, int]]) -> list[str]:
+    lines: list[str] = []
+    for kind in LEAF_TYPES:
+        c = by_type.get(kind) or {}
+        lines.append(
+            f"  {kind}: refined={c.get('refined', 0)} "
+            f"not_refined={c.get('not_refined', 0)} "
+            f"done={c.get('done', 0)} "
+            f"not_done={c.get('not_done', 0)} "
+            f"total={c.get('total', 0)}"
+        )
+    return lines
+
 
 def _board_section(project_root: Path, policy: Policy) -> dict[str, Any]:
     try:
@@ -41,16 +88,21 @@ def _board_section(project_root: Path, policy: Policy) -> dict[str, Any]:
     ]
     backlog = payload.get("backlog")
     backlog_counts: dict[str, Any] | None = None
+    backlog_by_leaf_type: dict[str, dict[str, int]] | None = None
     backlog_error = None
     if isinstance(backlog, dict):
         if backlog.get("error"):
             backlog_error = backlog.get("error")
         else:
             backlog_counts = backlog.get("counts") or {}
+            backlog_tickets = backlog.get("tickets") or []
+            if isinstance(backlog_tickets, list):
+                backlog_by_leaf_type = _leaf_type_counts(backlog_tickets)
 
     return {
         "folder": payload.get("folder"),
         "counts": counts,
+        "by_leaf_type": _leaf_type_counts(tickets if isinstance(tickets, list) else []),
         "epics": [
             {
                 "slug": e.get("slug"),
@@ -62,6 +114,7 @@ def _board_section(project_root: Path, policy: Policy) -> dict[str, Any]:
         ],
         "blocked": blocked,
         "backlog_counts": backlog_counts,
+        "backlog_by_leaf_type": backlog_by_leaf_type,
         "backlog_error": backlog_error,
         "problems": payload.get("problems") or [],
     }
@@ -116,9 +169,7 @@ def _run_dict(
 ) -> dict[str, Any]:
     now = time.time() if now is None else now
     age = run_age_s(state, now=now)
-    classified = classify_run(
-        project_root, state, now=now, stale_after_s=stale_after_s
-    )
+    classified = classify_run(project_root, state, now=now, stale_after_s=stale_after_s)
     alive = is_run_alive(project_root, state.run_id)
     pid = lock_holder_pid(project_root, state.run_id)
     return {
@@ -232,6 +283,10 @@ def format_status_human(data: dict[str, Any]) -> str:
         if counts:
             bits = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
             lines.append(f"counts: {bits}")
+        by_leaf = board.get("by_leaf_type")
+        if by_leaf:
+            lines.append("by type:")
+            lines.extend(_format_leaf_type_counts(by_leaf))
         epics = board.get("epics") or []
         if epics:
             lines.append("epics:")
@@ -252,6 +307,10 @@ def format_status_human(data: dict[str, Any]) -> str:
         if bc:
             bits = ", ".join(f"{k}={v}" for k, v in sorted(bc.items()))
             lines.append(f"backlog counts: {bits}")
+        backlog_by_leaf = board.get("backlog_by_leaf_type")
+        if backlog_by_leaf:
+            lines.append("backlog by type:")
+            lines.extend(_format_leaf_type_counts(backlog_by_leaf))
         if board.get("backlog_error"):
             lines.append(f"backlog error: {board['backlog_error']}")
         problems = board.get("problems") or []

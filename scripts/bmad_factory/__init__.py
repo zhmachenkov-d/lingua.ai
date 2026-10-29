@@ -1,4 +1,4 @@
-"""BMAD factory: lean autonomous ticket/epic/backlog/deferred orchestrator."""
+"""BMAD factory: lean autonomous ticket/epic/bugs/spikes/deferred orchestrator."""
 
 __all__ = ["__version__"]
 

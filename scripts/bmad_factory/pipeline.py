@@ -76,8 +76,10 @@ def _cli_args_for_run(run_state: RunState) -> str:
         return f"--ticket {run_state.ticket}"
     if run_state.mode == "epic" and run_state.epic:
         return f"--epic {run_state.epic}"
-    if run_state.mode == "backlog":
-        return "--backlog"
+    if run_state.mode in {"bugs", "backlog"}:
+        return "--bugs"
+    if run_state.mode == "spikes":
+        return "--spikes"
     if run_state.mode == "deferred":
         return "--deferred"
     return ""
