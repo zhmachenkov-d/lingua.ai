@@ -225,11 +225,11 @@ Confirm ignore: `git check-ignore -v textbooks/*.pdf` (rule `.gitignore` → `te
 ```bash
 docker compose up -d db api
 # Wait until api bootstrap finished migrations (ingest depends_on db only):
-until curl -sf http://127.0.0.1:8000/ready; do sleep 2; done
+for i in $(seq 1 180); do curl -sf http://127.0.0.1:8000/ready && break; sleep 2; [ "$i" -eq 180 ] && { echo "api /ready timed out after 6m" >&2; exit 1; }; done
 docker compose --profile ingest run --rm ingest
 # nested Docker (classic builder — same Bake/host-network note as Start the skeleton):
 DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml up -d --build db api
-until curl -sf http://127.0.0.1:8000/ready; do sleep 2; done
+for i in $(seq 1 180); do curl -sf http://127.0.0.1:8000/ready && break; sleep 2; [ "$i" -eq 180 ] && { echo "api /ready timed out after 6m" >&2; exit 1; }; done
 DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml --profile ingest run --rm ingest
 ```
 
