@@ -21,7 +21,7 @@ You reach this step from step 2, or from step 1 when resuming a plan whose `rout
 
 If intent gaps remain, present each as a numbered question with its options and what each option means, HALT for the human's answers, and fold the answers into the Intent.
 
-Capture `baseline_revision` (current HEAD, or `NO_VCS` if version control is unavailable) into `{plan_file}` frontmatter before making any changes. If `baseline_revision` already holds a value (resumed run), preserve it.
+Set or repair `baseline_revision` in `{plan_file}` frontmatter before making any other changes: if it already holds `NO_VCS`, or a `^[0-9a-f]{40}$` value that `git rev-parse` resolves to itself, leave it unchanged; else if it holds a non-empty invalid value, rewrite via `git rev-parse` on an unambiguous leading short hex prefix (7–12 characters) to the full 40-character SHA, or set `NO_VCS` with the reason under `## Implementation Notes` — never leave a non-resolving value as-is; else (empty / unset) set `NO_VCS` when VCS is unavailable, otherwise write the object name from `git rev-parse HEAD` after trimming trailing whitespace/newlines only. Reject any non-`NO_VCS` candidate that does not match `^[0-9a-f]{40}$`; re-run the capture rather than landing a short, truncated, or mangled value.
 
 Build the change from `{plan_file}`. The Intent section is what you implement. As you work, add notes to `## Implementation Notes`: decisions you made, files you changed, surprises.
 
@@ -42,7 +42,7 @@ Write `review: '{{ workflow.review }}'` and `review_source: 'pinned'` to `{plan_
 {% endif %}
 {% if review != "none" %}
 
-Read `{baseline_revision}` from `{plan_file}` frontmatter. If it is `NO_VCS`, use best effort to determine what changed. Otherwise use the repository's version-control tooling to write a unified diff of all changes since `{baseline_revision}`, untracked files included, to a uniquely-named file in the system temp directory; set `{diff_file}` to its absolute path. Set `{claims_file}` = `{plan_file}`.
+Before staging the review diff, apply the same `baseline_revision` validity rules as the capture step above (preserve valid full SHA / `NO_VCS`; rewrite truncated/mangled via 7–12-char short-prefix recovery or `NO_VCS` + Notes). Then read `{baseline_revision}` from `{plan_file}` frontmatter. If it is `NO_VCS`, use best effort to determine what changed. Otherwise use the repository's version-control tooling to write a unified diff of all changes since `{baseline_revision}`, untracked files included, to a uniquely-named file in the system temp directory; set `{diff_file}` to its absolute path. Set `{claims_file}` = `{plan_file}`.
 
 Runtime placeholders: `{diff_file}`, `{claims_file}`, and `{plan_file}` are paths, substituted absolute so a lens can read them; a launch prompt never carries diff text. `{verbatim_intent}` is the `## Intent` section of `{plan_file}` (inside `<frozen-after-approval>`), substituted inline as text. Before launching a lens, expand its skill-root placeholder to this skill's absolute installed directory; never leave that placeholder unresolved in a child prompt.
 

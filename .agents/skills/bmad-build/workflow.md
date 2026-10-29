@@ -32,7 +32,7 @@ A plan should target a **single user-facing goal** within **900–1600 tokens**:
 
 ## Conventions
 
-- Whenever this workflow captures or records a version-control revision, obtain the full canonical identifier directly from version control and preserve it verbatim.
+- Whenever this workflow captures or records a version-control revision, obtain the full canonical identifier directly from version control (`git rev-parse HEAD` → 40-character lowercase hex SHA) and preserve it verbatim. Never write a shortened, truncated, or otherwise edited revision into plan frontmatter `baseline_revision`; the only allowed non-SHA sentinel is `NO_VCS`.
 
 ## On Activation
 
