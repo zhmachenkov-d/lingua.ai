@@ -12,6 +12,7 @@ from app.cli import (
     WB_PDF_NAME,
     _searchable_pdf_for_units,
     ingest_mode,
+    ready_sweep,
     run_tracer_job,
 )
 from app.parse.result import ParseResult
@@ -109,6 +110,22 @@ def _stub_image_area_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ingest_mode_default_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("INGEST_MODE", raising=False)
     assert ingest_mode() == "tracer"
+
+
+def test_ready_sweep_default_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("INGEST_READY_SWEEP", raising=False)
+    assert ready_sweep() == "first"
+
+
+def test_ready_sweep_full(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    assert ready_sweep() == "full"
+
+
+def test_ready_sweep_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("INGEST_READY_SWEEP", "all")
+    with pytest.raises(ValueError, match="INGEST_READY_SWEEP"):
+        ready_sweep()
 
 
 def test_missing_sb_pdf_fail_fast(tmp_path: Path) -> None:
@@ -894,6 +911,370 @@ def test_threshold_env_flips_disposition_without_code_edits(
     assert code == 0
     assert ready.called
     review.assert_not_called()
+
+
+def test_default_sweep_stops_after_first_sb_ready(
+    sb_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Default/first sweep mints only the first gate-passing SB unit."""
+    monkeypatch.delenv("INGEST_READY_SWEEP", raising=False)
+    sb_spans = (
+        UnitSpan(SB_ID, "1A", "t", 5, 6),
+        UnitSpan(SB_ID, "1B", "t", 7, 8),
+    )
+    wb_spans = (UnitSpan(WB_ID, "1A", "t", 4, 5),)
+    ready_by_book: dict[str, list[str]] = {}
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session
+        return bool(ready_by_book.get(textbook_id))
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session
+        return list(ready_by_book.get(textbook_id, []))
+
+    def capture_ready(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        ready_by_book.setdefault(kwargs["textbook_id"], []).append(kwargs["unit_ref"])
+        return MagicMock()
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_ready_unit", side_effect=capture_ready),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch(
+            "app.cli.smoke_select_unit",
+            side_effect=lambda s, ref: SmokeRow(
+                unit_ref=ref,
+                status="Ready",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
+            ),
+        ),
+    ):
+        stdout = io.StringIO()
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=lambda pdf, span: _rich_text(span.page_count),
+            stdout=stdout,
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+
+    assert code == 0
+    not_ready.assert_not_called()
+    assert ready_by_book[SB_ID] == [f"{SB_ID}/1A"]
+    assert ready_by_book[WB_ID] == [f"{WB_ID}/1A"]
+    summary = json.loads(stdout.getvalue().strip().splitlines()[-1])
+    assert summary["sb_ready"] == [f"{SB_ID}/1A"]
+
+
+def test_full_sweep_mints_all_gate_passing_sb_units(
+    sb_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INGEST_READY_SWEEP=full Ready-mints every gate-passing SB map unit."""
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    sb_spans = (
+        UnitSpan(SB_ID, "1A", "t", 5, 6),
+        UnitSpan(SB_ID, "1B", "t", 7, 8),
+        UnitSpan(SB_ID, "1C", "t", 9, 10),
+    )
+    wb_spans = (
+        UnitSpan(WB_ID, "1A", "t", 4, 5),
+        UnitSpan(WB_ID, "1B", "t", 6, 7),
+    )
+    ready_by_book: dict[str, list[str]] = {}
+    ready_gate_metrics: list[dict[str, Any]] = []
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session
+        return bool(ready_by_book.get(textbook_id))
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session
+        return list(ready_by_book.get(textbook_id, []))
+
+    def capture_ready(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        ready_by_book.setdefault(kwargs["textbook_id"], []).append(kwargs["unit_ref"])
+        ready_gate_metrics.append(dict(kwargs["gate_metrics"]))
+        assert kwargs["dims"] == EMBEDDING_DIMS
+        assert kwargs["model_name"] == EMBEDDING_MODEL_NAME
+        return MagicMock()
+
+    def extract(pdf: Path, span: UnitSpan) -> str:
+        del pdf
+        # Mid SB unit fails hard gate; others pass. WB both pass but stop-after-first.
+        if span.unit_ref == f"{SB_ID}/1B":
+            return "tiny"
+        return _rich_text(span.page_count)
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_ready_unit", side_effect=capture_ready),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch(
+            "app.cli.smoke_select_unit",
+            side_effect=lambda s, ref: SmokeRow(
+                unit_ref=ref,
+                status="Ready",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
+            ),
+        ),
+    ):
+        stdout = io.StringIO()
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=extract,
+            stdout=stdout,
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+
+    assert code == 0
+    assert ready_by_book[SB_ID] == [f"{SB_ID}/1A", f"{SB_ID}/1C"]
+    # WB remains stop-after-first even under full SB sweep.
+    assert ready_by_book[WB_ID] == [f"{WB_ID}/1A"]
+    assert not_ready.call_args.kwargs["unit_ref"] == f"{SB_ID}/1B"
+    assert all(m for m in ready_gate_metrics)
+    summary = json.loads(stdout.getvalue().strip().splitlines()[-1])
+    assert summary["sb_ready"] == [f"{SB_ID}/1A", f"{SB_ID}/1C"]
+    assert summary["wb_ready"] == [f"{WB_ID}/1A"]
+
+
+def test_full_sweep_preserves_prior_ready_on_fail(
+    sb_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-sweep must not demote an already-Ready unit when that unit fails gate."""
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    sb_spans = (
+        UnitSpan(SB_ID, "1A", "t", 5, 6),
+        UnitSpan(SB_ID, "1B", "t", 7, 8),
+    )
+    wb_spans = (UnitSpan(WB_ID, "1A", "t", 4, 5),)
+    # Prior Ready for 1A; this run's extract fails 1A hard-gate but 1B passes.
+    ready_by_book: dict[str, list[str]] = {SB_ID: [f"{SB_ID}/1A"]}
+    ready_calls: list[str] = []
+    demote_refs: list[str] = []
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session
+        return bool(ready_by_book.get(textbook_id))
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session
+        return list(ready_by_book.get(textbook_id, []))
+
+    def capture_ready(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        ready_calls.append(kwargs["unit_ref"])
+        refs = ready_by_book.setdefault(kwargs["textbook_id"], [])
+        if kwargs["unit_ref"] not in refs:
+            refs.append(kwargs["unit_ref"])
+        return MagicMock()
+
+    def capture_demote(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        demote_refs.append(kwargs["unit_ref"])
+        return MagicMock()
+
+    def extract(pdf: Path, span: UnitSpan) -> str:
+        del pdf
+        if span.unit_ref == f"{SB_ID}/1A":
+            return "tiny"  # hard-gate fail
+        return _rich_text(span.page_count)
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_ready_unit", side_effect=capture_ready),
+        patch("app.cli.upsert_not_ready_unit", side_effect=capture_demote),
+        patch("app.cli.upsert_review_unit", side_effect=capture_demote),
+        patch(
+            "app.cli.smoke_select_unit",
+            side_effect=lambda s, ref: SmokeRow(
+                unit_ref=ref,
+                status="Ready",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
+            ),
+        ),
+    ):
+        stdout = io.StringIO()
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=extract,
+            stdout=stdout,
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+
+    assert code == 0
+    assert f"{SB_ID}/1A" not in demote_refs
+    assert f"{SB_ID}/1A" in ready_by_book[SB_ID]
+    assert ready_calls == [f"{SB_ID}/1B", f"{WB_ID}/1A"]
+    summary = json.loads(stdout.getvalue().strip().splitlines()[-1])
+    assert summary["sb_ready"] == [f"{SB_ID}/1A", f"{SB_ID}/1B"]
+
+
+def test_full_sweep_does_not_skip_existing_sb_ready(
+    sb_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sweep=full still runs SB mint when ≥1 SB Ready already exists."""
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    sb_spans = (
+        UnitSpan(SB_ID, "1A", "t", 5, 6),
+        UnitSpan(SB_ID, "1B", "t", 7, 8),
+    )
+    wb_spans = (UnitSpan(WB_ID, "1A", "t", 4, 5),)
+    ready_by_book: dict[str, list[str]] = {SB_ID: [f"{SB_ID}/1A"]}
+    ready_calls: list[str] = []
+    primary = FakeAdapter(_ok_parse())
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session
+        return bool(ready_by_book.get(textbook_id))
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session
+        return list(ready_by_book.get(textbook_id, []))
+
+    def capture_ready(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        ready_calls.append(kwargs["unit_ref"])
+        refs = ready_by_book.setdefault(kwargs["textbook_id"], [])
+        if kwargs["unit_ref"] not in refs:
+            refs.append(kwargs["unit_ref"])
+        return MagicMock()
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_ready_unit", side_effect=capture_ready),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch(
+            "app.cli.smoke_select_unit",
+            side_effect=lambda s, ref: SmokeRow(
+                unit_ref=ref,
+                status="Ready",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
+            ),
+        ),
+    ):
+        stdout = io.StringIO()
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=primary,
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=lambda pdf, span: _rich_text(span.page_count),
+            stdout=stdout,
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+
+    assert code == 0
+    not_ready.assert_not_called()
+    # Both SB units minted (re-upsert 1A + new 1B); no skipped_sb short-circuit.
+    assert ready_calls == [f"{SB_ID}/1A", f"{SB_ID}/1B", f"{WB_ID}/1A"]
+    assert any(p.name == SB_PDF_NAME for p in primary.parse_calls)
+    lines = [json.loads(line) for line in stdout.getvalue().strip().splitlines()]
+    assert not any(line.get("skipped") is True for line in lines)
+    summary = lines[-1]
+    assert summary["skipped_sb"] is False
+    assert summary["sb_ready"] == [f"{SB_ID}/1A", f"{SB_ID}/1B"]
+
+
+def test_full_sweep_fixture_source_never_ready(
+    sb_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fixture refuse still holds under INGEST_READY_SWEEP=full."""
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    fixtures = tmp_path / "fixtures"
+    fixtures.mkdir()
+    (fixtures / "English_File_4th_edition_Beginner_Students_book.pdf").write_bytes(
+        b"%PDF"
+    )
+    (fixtures / WB_PDF_NAME).write_bytes(b"%PDF")
+    sb_spans = (
+        UnitSpan(SB_ID, "1A", "t", 5, 6),
+        UnitSpan(SB_ID, "1B", "t", 7, 8),
+    )
+    wb_spans = (UnitSpan(WB_ID, "1A", "t", 4, 5),)
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session, textbook_id
+        return False
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session, textbook_id
+        return []
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch("app.cli.upsert_ready_unit") as ready,
+    ):
+        code = run_tracer_job(
+            textbooks=fixtures,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=lambda pdf, span: _rich_text(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+    assert code == 1
+    ready.assert_not_called()
+    assert not_ready.called
+    assert all(
+        c.kwargs["gate_reason"] == "fixture_refuse" for c in not_ready.call_args_list
+    )
 
 
 def test_hard_gate_fail_then_ready(sb_dir: Path) -> None:

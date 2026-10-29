@@ -55,6 +55,19 @@ def ingest_mode() -> str:
     return raw
 
 
+def ready_sweep() -> str:
+    """Ready sweep policy for tracer: stop after first, or walk full SB map.
+
+    Ignored when ``INGEST_MODE=metrics``. Default ``first`` preserves demo behavior.
+    """
+    raw = os.environ.get("INGEST_READY_SWEEP", "first").strip().lower() or "first"
+    if raw not in {"first", "full"}:
+        raise ValueError(
+            f"Unknown INGEST_READY_SWEEP={raw!r}; expected first or full"
+        )
+    return raw
+
+
 def _default_primary_adapter() -> ParseAdapter:
     """Select primary parse adapter from ``PARSE_PRIMARY`` (default: ocrmypdf)."""
     choice = os.environ.get("PARSE_PRIMARY", "ocrmypdf").strip().lower() or "ocrmypdf"
@@ -223,8 +236,9 @@ def _mint_first_ready(
     extract_fn: ExtractFn,
     job_cache: Path,
     stdout: TextIO,
+    stop_after_first: bool = True,
 ) -> str | None:
-    """OCR → map units → gate → chunk/embed; stop after first Ready for textbook."""
+    """OCR → map units → gate → chunk/embed; optionally stop after first Ready."""
     logger.info(
         "Tracer parsing %s (%s) via %s",
         pdf_path.name,
@@ -255,8 +269,21 @@ def _mint_first_ready(
                 page_end=span.page_end,
             )
 
+            def _keep_existing_ready(reason: str) -> bool:
+                """Re-sweep must not demote an already-Ready unit on fail paths."""
+                if span.unit_ref in list_ready_unit_refs(session, span.textbook_id):
+                    logger.info(
+                        "Keeping existing Ready %s (skip demote: %s)",
+                        span.unit_ref,
+                        reason,
+                    )
+                    return True
+                return False
+
             # Text-layer / failed parse is never a silent Ready path.
             if parse_result.status != "ok":
+                if _keep_existing_ready(parse_result.status):
+                    continue
                 metrics = dict(gate.gate_metrics)
                 metrics["parse_status"] = parse_result.status
                 upsert_not_ready_unit(
@@ -275,6 +302,8 @@ def _mint_first_ready(
                 continue
 
             if gate.disposition == "Review":
+                if _keep_existing_ready(gate.gate_reason or "image_area_soft"):
+                    continue
                 upsert_review_unit(
                     session,
                     textbook_id=span.textbook_id,
@@ -291,6 +320,8 @@ def _mint_first_ready(
                 continue
 
             if gate.disposition == "NotReady" or not gate.passed:
+                if _keep_existing_ready(gate.gate_reason or "structure_zero"):
+                    continue
                 upsert_not_ready_unit(
                     session,
                     textbook_id=span.textbook_id,
@@ -309,6 +340,8 @@ def _mint_first_ready(
             chunks = split_paragraphs(unit_text)
             non_empty = [c for c in chunks if c.strip()]
             if not non_empty:
+                if _keep_existing_ready("structure_zero"):
+                    continue
                 metrics = dict(gate.gate_metrics)
                 metrics["structure_zero"] = True
                 metrics["chunk_count"] = 0
@@ -352,12 +385,14 @@ def _mint_first_ready(
                 },
             }
             print(json.dumps(payload, ensure_ascii=False), file=stdout, flush=True)
-            logger.info(
-                "Ready %s — stopping after first Ready unit for %s",
-                ready_ref,
-                textbook_id,
-            )
-            break
+            if stop_after_first:
+                logger.info(
+                    "Ready %s — stopping after first Ready unit for %s",
+                    ready_ref,
+                    textbook_id,
+                )
+                break
+            logger.info("Ready %s — continuing map sweep for %s", ready_ref, textbook_id)
 
     return ready_ref
 
@@ -430,10 +465,15 @@ def run_tracer_job(
             if callable(warm):
                 warm()
 
+            sweep = ready_sweep()
+            # Full SB map sweep never short-circuits on existing Ready.
+            skip_sb_when_ready = sweep == "first"
+            stop_sb_after_first = sweep == "first"
+
             skipped_sb = False
             sb_ready_ref: str | None = None
             with SessionLocal() as session:
-                if has_ready_unit(session, EF4_BEG_SB_ID):
+                if skip_sb_when_ready and has_ready_unit(session, EF4_BEG_SB_ID):
                     skipped_sb = True
                     refs = list_ready_unit_refs(session, EF4_BEG_SB_ID)
                     sb_ready_ref = refs[0] if refs else None
@@ -468,8 +508,10 @@ def run_tracer_job(
                     extract_fn=extract_fn,
                     job_cache=cache,
                     stdout=out,
+                    stop_after_first=stop_sb_after_first,
                 )
 
+            # WB always stop-after-first (full-map sweep is SB-only).
             _mint_first_ready(
                 SessionLocal=SessionLocal,
                 pdf_path=wb_path,
@@ -480,6 +522,7 @@ def run_tracer_job(
                 extract_fn=extract_fn,
                 job_cache=cache,
                 stdout=out,
+                stop_after_first=True,
             )
 
             with SessionLocal() as session:

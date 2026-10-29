@@ -91,6 +91,8 @@ services:
       TEXTBOOKS_DIR: /textbooks
       # Tracer co-ingests SB then WB; both PDFs must be present under textbooks/.
       INGEST_MODE: tracer
+      # Optional: INGEST_READY_SWEEP=full walks all ef4-beg-sb map units (default first).
+      INGEST_READY_SWEEP: ${INGEST_READY_SWEEP:-first}
       # Same component env → in-process URL pattern as api (AD-5).
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
