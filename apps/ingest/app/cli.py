@@ -24,6 +24,7 @@ from app.persist import (
     smoke_select_unit,
     upsert_not_ready_unit,
     upsert_ready_unit,
+    upsert_review_unit,
 )
 from app.units import EF4_BEG_SB_ID, extract_unit_text, list_units
 from app.units.span import UnitSpan
@@ -282,6 +283,9 @@ def run_tracer_job(
                         unit_text,
                         page_count=span.page_count,
                         pdf_path=pdf_path,
+                        unit_pdf_path=searchable,
+                        page_start=span.page_start,
+                        page_end=span.page_end,
                     )
 
                     # Text-layer / failed parse is never a silent Ready path.
@@ -303,7 +307,23 @@ def run_tracer_job(
                         )
                         continue
 
-                    if not gate.passed:
+                    if gate.disposition == "Review":
+                        upsert_review_unit(
+                            session,
+                            textbook_id=span.textbook_id,
+                            unit_ref=span.unit_ref,
+                            gate_reason=gate.gate_reason or "image_area_soft",
+                            gate_metrics=gate.gate_metrics,
+                        )
+                        session.commit()
+                        logger.info(
+                            "Review %s reason=%s",
+                            span.unit_ref,
+                            gate.gate_reason,
+                        )
+                        continue
+
+                    if gate.disposition == "NotReady" or not gate.passed:
                         upsert_not_ready_unit(
                             session,
                             textbook_id=span.textbook_id,

@@ -62,6 +62,15 @@ def sb_dir(tmp_path: Path) -> Path:
     return textbooks
 
 
+@pytest.fixture(autouse=True)
+def _stub_image_area_ratio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fake textbooks PDFs are not real PyMuPDF docs; inject soft signal."""
+    monkeypatch.setattr(
+        "app.gate.hard.compute_image_area_ratio",
+        lambda *args, **kwargs: 0.0,
+    )
+
+
 def test_ingest_mode_default_tracer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("INGEST_MODE", raising=False)
     assert ingest_mode() == "tracer"
@@ -198,6 +207,178 @@ def test_happy_path_first_ready_and_smoke(sb_dir: Path) -> None:
     assert payload["smoke"]["dims"] == 1024
     assert payload["smoke"]["model_name"] == "BAAI/bge-m3"
     assert "gate_metrics" in payload
+
+
+def test_soft_review_then_ready_never_embeds_review(sb_dir: Path) -> None:
+    spans = (
+        UnitSpan("ef4-beg-sb", "1A", "t", 5, 6),
+        UnitSpan("ef4-beg-sb", "1B", "t", 7, 8),
+    )
+
+    def extract(pdf: Path, span: UnitSpan) -> str:
+        del pdf
+        if span.code == "1A":
+            return "hi"  # soft Review when image ratio injected high
+        return _rich_text(span.page_count)
+
+    session_cm = MagicMock(
+        __enter__=MagicMock(return_value=MagicMock()),
+        __exit__=MagicMock(return_value=False),
+    )
+    review_refs: list[str] = []
+    ready_refs: list[str] = []
+    embed_calls: list[int] = []
+
+    class CountingEmbedder(FakeEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            embed_calls.append(len(texts))
+            return super().embed(texts)
+
+    def capture_review(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        review_refs.append(kwargs["unit_ref"])
+        return MagicMock()
+
+    def capture_ready(*args: Any, **kwargs: Any) -> MagicMock:
+        del args
+        ready_refs.append(kwargs["unit_ref"])
+        return MagicMock()
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), MagicMock(return_value=session_cm)),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", return_value=spans),
+        patch("app.cli.evaluate_hard_gate") as gate_mock,
+        patch("app.cli.upsert_review_unit", side_effect=capture_review),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch("app.cli.upsert_ready_unit", side_effect=capture_ready),
+        patch(
+            "app.cli.smoke_select_unit",
+            return_value=SmokeRow(
+                unit_ref="ef4-beg-sb/1B",
+                status="Ready",
+                dims=1024,
+                model_name="BAAI/bge-m3",
+            ),
+        ),
+    ):
+        from app.gate.hard import GateResult
+
+        def gate_side_effect(text: str, **kwargs: Any) -> GateResult:
+            del kwargs
+            if text.strip() == "hi":
+                return GateResult(
+                    passed=False,
+                    disposition="Review",
+                    gate_reason="image_area_soft",
+                    gate_metrics={
+                        "image_area_ratio": 0.85,
+                        "mean_chars_per_page": 1.0,
+                    },
+                )
+            return GateResult(
+                passed=True,
+                disposition="Ready",
+                gate_reason=None,
+                gate_metrics={
+                    "image_area_ratio": 0.1,
+                    "mean_chars_per_page": 500.0,
+                    "printable_ratio": 1.0,
+                },
+            )
+
+        gate_mock.side_effect = gate_side_effect
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=CountingEmbedder(),
+            extract_fn=extract,
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+
+    assert code == 0
+    assert review_refs == ["ef4-beg-sb/1A"]
+    assert ready_refs == ["ef4-beg-sb/1B"]
+    not_ready.assert_not_called()
+    # Only the Ready unit embeds — Review never embeds.
+    assert embed_calls == [1] or (len(embed_calls) == 1 and embed_calls[0] >= 1)
+
+
+def test_threshold_env_flips_disposition_without_code_edits(
+    sb_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same unit text: soft envs → Review; raised soft + hard → Ready."""
+    spans = (UnitSpan("ef4-beg-sb", "1A", "t", 5, 6),)
+    session_cm = MagicMock(
+        __enter__=MagicMock(return_value=MagicMock()),
+        __exit__=MagicMock(return_value=False),
+    )
+    soft_text = "ab"  # 2 chars / 2 pages = 1.0
+
+    def run_once() -> tuple[int, MagicMock, MagicMock, MagicMock]:
+        review = MagicMock()
+        not_ready = MagicMock()
+        ready = MagicMock()
+        with (
+            patch(
+                "app.cli.session_factory",
+                return_value=(MagicMock(), MagicMock(return_value=session_cm)),
+            ),
+            patch("app.cli.ensure_corpus_schema"),
+            patch("app.cli.list_units", return_value=spans),
+            patch(
+                "app.cli.evaluate_hard_gate",
+                wraps=__import__("app.gate", fromlist=["evaluate_hard_gate"]).evaluate_hard_gate,
+            ),
+            patch("app.gate.hard.compute_image_area_ratio", return_value=0.85),
+            patch("app.cli.upsert_review_unit", review),
+            patch("app.cli.upsert_not_ready_unit", not_ready),
+            patch("app.cli.upsert_ready_unit", ready),
+            patch(
+                "app.cli.smoke_select_unit",
+                return_value=SmokeRow(
+                    unit_ref="ef4-beg-sb/1A",
+                    status="Ready",
+                    dims=1024,
+                    model_name="BAAI/bge-m3",
+                ),
+            ),
+        ):
+            code = run_tracer_job(
+                textbooks=sb_dir,
+                primary=FakeAdapter(_ok_parse()),
+                fallback=FakeAdapter(_ok_parse()),
+                embedder=FakeEmbedder(),
+                extract_fn=lambda pdf, span: soft_text,
+                stdout=io.StringIO(),
+                stderr=io.StringIO(),
+                database_url="postgresql://u:p@localhost/db",
+            )
+        return code, review, not_ready, ready
+
+    # Soft pair matches → Review, continue, zero Ready → exit 1
+    monkeypatch.delenv("GATE_SOFT_CHARS_PER_PAGE", raising=False)
+    monkeypatch.delenv("GATE_IMAGE_AREA_RATIO", raising=False)
+    monkeypatch.delenv("GATE_MEAN_CHARS_PER_PAGE", raising=False)
+    code, review, not_ready, ready = run_once()
+    assert code == 1
+    assert review.called
+    ready.assert_not_called()
+
+    # Soft disabled (image thresh 0.99) + hard mean lowered → Ready
+    monkeypatch.setenv("GATE_IMAGE_AREA_RATIO", "0.99")
+    monkeypatch.setenv("GATE_SOFT_CHARS_PER_PAGE", "1")
+    monkeypatch.setenv("GATE_MEAN_CHARS_PER_PAGE", "1")
+    code, review, not_ready, ready = run_once()
+    assert code == 0
+    assert ready.called
+    review.assert_not_called()
 
 
 def test_hard_gate_fail_then_ready(sb_dir: Path) -> None:

@@ -11,6 +11,7 @@ from app.persist.store import (
     ensure_corpus_schema,
     upsert_not_ready_unit,
     upsert_ready_unit,
+    upsert_review_unit,
 )
 
 
@@ -134,6 +135,73 @@ def test_upsert_not_ready_and_ready_paths() -> None:
         assert ready.gate_reason is None
         assert any(type(c).__name__ == "Chunk" for c in stored["chunks"])
         assert any(type(c).__name__ == "Embedding" for c in stored["chunks"])
+
+
+def test_upsert_review_clears_chunks_and_status() -> None:
+    from app.persist.models import Textbook, TextbookUnit
+
+    stored: dict[str, Any] = {"textbook": None, "unit": None, "chunks": []}
+    clear_calls = {"n": 0}
+
+    class FakeSession:
+        def get(self, model, key):  # noqa: ANN001
+            if model is Textbook and stored["textbook"] and stored["textbook"].id == key:
+                return stored["textbook"]
+            return None
+
+        def add(self, obj) -> None:  # noqa: ANN001
+            if isinstance(obj, Textbook):
+                stored["textbook"] = obj
+            elif isinstance(obj, TextbookUnit):
+                stored["unit"] = obj
+            else:
+                stored["chunks"].append(obj)
+
+        def flush(self) -> None:
+            if stored["unit"] is not None and getattr(stored["unit"], "id", None) is None:
+                stored["unit"].id = "unit-1"
+
+        def scalar(self, stmt):  # noqa: ANN001
+            del stmt
+            return stored["unit"]
+
+        def scalars(self, stmt):  # noqa: ANN001
+            del stmt
+            return MagicMock(all=lambda: [])
+
+        def execute(self, *args, **kwargs):  # noqa: ANN001, ANN003
+            del args, kwargs
+            clear_calls["n"] += 1
+            return MagicMock()
+
+        def get_bind(self):
+            return MagicMock()
+
+    session = FakeSession()
+    with (
+        patch("app.persist.store.ensure_corpus_schema"),
+        patch("app.persist.store.select", return_value=MagicMock()),
+        patch("app.persist.store.delete", return_value=MagicMock()),
+        patch(
+            "app.persist.store._clear_unit_chunks",
+            side_effect=lambda s, u: clear_calls.__setitem__("n", clear_calls["n"] + 1),
+        ),
+    ):
+        unit = upsert_review_unit(
+            session,  # type: ignore[arg-type]
+            textbook_id="ef4-beg-sb",
+            unit_ref="ef4-beg-sb/1A",
+            gate_reason="image_area_soft",
+            gate_metrics={
+                "image_area_ratio": 0.85,
+                "mean_chars_per_page": 10.0,
+            },
+        )
+    assert unit.status == "Review"
+    assert unit.gate_reason == "image_area_soft"
+    assert unit.gate_metrics["image_area_ratio"] == 0.85
+    assert clear_calls["n"] >= 1
+    assert not any(type(c).__name__ == "Chunk" for c in stored["chunks"])
 
 
 def test_upsert_ready_requires_chunks() -> None:
