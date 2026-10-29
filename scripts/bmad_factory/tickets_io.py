@@ -1,4 +1,4 @@
-"""tickets.py wrappers and mark-done (repo + GitHub store)."""
+"""tickets.py wrappers and mark-done (repo + tracker stores via BMAD write)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,9 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
+from .agent import agent_call_limits, run_cursor_agent
 from .constants import (
+    DEFAULT_MODEL_ID,
     SHUTDOWN_ERROR,
     STORE_NAME_RE,
     STORE_PROJECT_FILE,
@@ -234,7 +236,78 @@ def _github_mark_done(project_root: Path, tracker_id: str, cfg: dict[str, Any]) 
             raise FactoryHalt(SHUTDOWN_ERROR, err)
 
 
-def _tracker_mark_done(
+def _store_address_lines(tickets: dict[str, Any]) -> str:
+    """Non-empty ticket address fields for the write-verb agent prompt."""
+    skip = {"store", "access"}
+    lines: list[str] = []
+    for key, value in tickets.items():
+        if key in skip or isinstance(value, (dict, list)):
+            continue
+        text = str(value or "").strip()
+        if text:
+            lines.append(f"- {key}: {text}")
+    access = str(tickets.get("access") or "").strip()
+    if access:
+        lines.append(f"- access: {access}")
+    return "\n".join(lines) if lines else "- (none)"
+
+
+def build_tracker_write_prompt(
+    *,
+    store: str,
+    write_verb: str,
+    tickets: dict[str, Any],
+    ref: str,
+    story_file: str,
+    title: str,
+    ticket_type: str,
+    tracker_id: str | None,
+    folder: str | None,
+    project_root: Path,
+    policy: Policy | None,
+) -> str:
+    """Prompt for a short agent that follows BMAD store verbs.write."""
+    script_rel = policy.tickets.script if policy else "_bmad/method/scripts/tickets.py"
+    mirror_args = f"mirror {folder}" if folder else "mirror"
+    mirror_cmd = f"uv run {script_rel} --project-root {project_root} {mirror_args}"
+    tid = (tracker_id or "").strip()
+    if tid:
+        publish_lines = (
+            f"Already published as tracker_id={tid}. Do not create a duplicate. "
+            "Transition the remote item to done only."
+        )
+    else:
+        publish_lines = (
+            "Publish the leaf if unpublished (create the remote item). "
+            "Then transition it to done."
+        )
+    mirror_example = json.dumps(
+        [
+            {
+                "ref": ref,
+                "tracker_id": "<id>",
+                "remote": "<url>",
+                "tracker_status": "done",
+            }
+        ]
+    )
+    return (
+        f"Mark ticket {ref} done on BMAD tracker store {store!r}.\n"
+        f"{publish_lines}\n"
+        f"Title: {title or '(none)'}\n"
+        f"Type: {ticket_type or '(none)'}\n"
+        f"Leaf file: {story_file}\n"
+        "When sending body content, omit frontmatter keys tracker_id, remote, "
+        "tracker_status, status, and assignee.\n"
+        f"Store address fields:\n{_store_address_lines(tickets)}\n"
+        f"Write verb (follow exactly):\n{write_verb.strip()}\n"
+        "After the remote write, mirror into the leaf with stdin JSON, e.g.\n"
+        f"  printf '%s' '{mirror_example}' | {mirror_cmd}\n"
+        "Do not start any other ticket or skill."
+    )
+
+
+def _tracker_publish_and_done(
     project_root: Path,
     *,
     ref: str,
@@ -242,23 +315,82 @@ def _tracker_mark_done(
     plan_path: Path,
     folder: str | None,
     policy: Policy | None,
+    cfg: dict[str, Any],
+    model: str,
+    dry_run: bool,
 ) -> None:
-    cfg = _load_store_config(project_root)
+    """Publish (if needed) and mark done via BMAD store verbs.write agent."""
     tickets = cfg.get("tickets") if isinstance(cfg.get("tickets"), dict) else {}
     store = str((tickets or {}).get("store") or "repo")
-    tid = (tracker_id or "").strip()
+    if store == "repo":
+        raise FactoryHalt(
+            SHUTDOWN_ERROR,
+            f"store is repo: tracker write path should not run for {ref}",
+        )
+    verbs = cfg.get("verbs") if isinstance(cfg.get("verbs"), dict) else {}
+    write_verb = str((verbs or {}).get("write") or "").strip()
+    if not write_verb:
+        raise FactoryHalt(
+            SHUTDOWN_ERROR,
+            f"store {store!r}: missing verbs.write; cannot publish/mark done for {ref}",
+        )
+
+    found = tickets_find(project_root, ref, folder, policy=policy)
+    story = found.get("story_file")
+    if not story:
+        raise FactoryHalt(
+            SHUTDOWN_ERROR,
+            f"store {store!r}: no leaf file to publish for {ref}",
+        )
+    story_path = Path(str(story))
+    if not story_path.is_file():
+        raise FactoryHalt(
+            SHUTDOWN_ERROR,
+            f"store {store!r}: leaf file missing for {ref}: {story_path}",
+        )
+
+    prompt = build_tracker_write_prompt(
+        store=store,
+        write_verb=write_verb,
+        tickets=dict(tickets or {}),
+        ref=ref,
+        story_file=str(story_path),
+        title=str(found.get("title") or "").strip(),
+        ticket_type=str(found.get("type") or "").strip(),
+        tracker_id=tracker_id,
+        folder=folder,
+        project_root=project_root,
+        policy=policy,
+    )
+    log.info(
+        "tracker write via BMAD verbs.write store=%s ref=%s publish=%s",
+        store,
+        ref,
+        not bool((tracker_id or "").strip()),
+    )
+    limits = policy.limits if policy else None
+    agent = run_cursor_agent(
+        project_root=project_root,
+        model=model or DEFAULT_MODEL_ID,
+        prompt=prompt,
+        dry_run=dry_run,
+        **agent_call_limits(limits),
+    )
+    if dry_run:
+        log.info("[dry-run] tracker write skipped verification ref=%s", ref)
+        return
+    if agent.error:
+        raise FactoryHalt(
+            SHUTDOWN_ERROR,
+            f"store {store!r}: tracker write agent failed for {ref}: {agent.error}",
+        )
+
+    found_after = tickets_find(project_root, ref, folder, policy=policy)
+    tid = str(found_after.get("tracker_id") or "").strip()
     if not tid:
         raise FactoryHalt(
             SHUTDOWN_ERROR,
             f"store is {store}: cannot mark done without tracker_id for {ref}",
-        )
-    if store == "github":
-        _github_mark_done(project_root, tid, cfg)
-    else:
-        raise FactoryHalt(
-            SHUTDOWN_ERROR,
-            f"no mark-done handler for store {store!r} in bmad-factory "
-            f"(supported: github, repo via tickets.py)",
         )
     tickets_mirror(
         project_root,
@@ -269,6 +401,57 @@ def _tracker_mark_done(
     set_plan_status(plan_path, "done")
 
 
+def _tracker_mark_done(
+    project_root: Path,
+    *,
+    ref: str,
+    tracker_id: str | None,
+    plan_path: Path,
+    folder: str | None,
+    policy: Policy | None,
+    model: str = DEFAULT_MODEL_ID,
+    dry_run: bool = False,
+) -> None:
+    cfg = _load_store_config(project_root)
+    tickets = cfg.get("tickets") if isinstance(cfg.get("tickets"), dict) else {}
+    store = str((tickets or {}).get("store") or "repo")
+    tid = (tracker_id or "").strip()
+    if not tid:
+        _tracker_publish_and_done(
+            project_root,
+            ref=ref,
+            tracker_id=None,
+            plan_path=plan_path,
+            folder=folder,
+            policy=policy,
+            cfg=cfg,
+            model=model,
+            dry_run=dry_run,
+        )
+        return
+    if store == "github":
+        _github_mark_done(project_root, tid, cfg)
+        tickets_mirror(
+            project_root,
+            [{"ref": ref, "tracker_id": tid, "tracker_status": "done"}],
+            folder=folder,
+            policy=policy,
+        )
+        set_plan_status(plan_path, "done")
+        return
+    _tracker_publish_and_done(
+        project_root,
+        ref=ref,
+        tracker_id=tid,
+        plan_path=plan_path,
+        folder=folder,
+        policy=policy,
+        cfg=cfg,
+        model=model,
+        dry_run=dry_run,
+    )
+
+
 def tickets_mark_done(
     project_root: Path,
     ref: str,
@@ -277,8 +460,10 @@ def tickets_mark_done(
     tracker_id: str | None = None,
     folder: str | None = None,
     policy: Policy | None = None,
+    model: str = DEFAULT_MODEL_ID,
+    dry_run: bool = False,
 ) -> None:
-    """Mark ticket done via tickets.py mark, or GitHub close + mirror on store refusal."""
+    """Mark ticket done via tickets.py mark, or BMAD tracker write on store refusal."""
     args = ["mark"]
     if folder:
         args.extend([folder, ref, "done"])
@@ -309,6 +494,8 @@ def tickets_mark_done(
             plan_path=plan_path,
             folder=folder,
             policy=policy,
+            model=model,
+            dry_run=dry_run,
         )
         return
     raise FactoryHalt(SHUTDOWN_ERROR, f"mark done failed: {err_msg}")
