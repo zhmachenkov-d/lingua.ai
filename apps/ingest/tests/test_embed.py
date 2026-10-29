@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.embed import EMBEDDING_DIMS, MODEL_NAME, BgeM3Embedder
+from lingua_ids import EMBEDDING_DIMS as SHARED_DIMS
+from lingua_ids import EMBEDDING_MODEL_NAME
 
 
 class _FakeModel:
@@ -9,6 +11,16 @@ class _FakeModel:
         return {
             "dense_vecs": [[float(i)] * EMBEDDING_DIMS for i, _ in enumerate(texts)]
         }
+
+
+def test_embedder_pin_matches_shared_sot() -> None:
+    assert MODEL_NAME == EMBEDDING_MODEL_NAME
+    assert EMBEDDING_DIMS == SHARED_DIMS
+    assert SHARED_DIMS == 1024
+    assert EMBEDDING_MODEL_NAME.endswith("bge-m3")
+    embedder = BgeM3Embedder()
+    assert embedder.model_name == EMBEDDING_MODEL_NAME
+    assert embedder.dims == SHARED_DIMS
 
 
 def test_bge_m3_embedder_stamps_dims(monkeypatch) -> None:  # noqa: ANN001

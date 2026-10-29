@@ -1,12 +1,11 @@
 import uuid
 
+from lingua_ids import EMBEDDING_DIMS
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import CheckConstraint, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, uuid_pk
-
-EMBEDDING_DIMS = 1024
 
 
 class Embedding(Base):

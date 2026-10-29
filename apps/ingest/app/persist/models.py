@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from lingua_ids import EMBEDDING_DIMS
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     CheckConstraint,
@@ -22,7 +23,6 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 UNIT_STATUSES = ("Ready", "NotReady", "Review")
-EMBEDDING_DIMS = 1024
 
 
 class Base(DeclarativeBase):
