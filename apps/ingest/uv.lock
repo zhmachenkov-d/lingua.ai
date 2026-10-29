@@ -1038,6 +1038,23 @@ wheels = [
 ]
 
 [[package]]
+name = "lingua-corpus"
+version = "0.1.0"
+source = { directory = "../../packages/lingua_corpus" }
+dependencies = [
+    { name = "lingua-ids" },
+    { name = "pgvector" },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "lingua-ids", directory = "../../packages/lingua_ids" },
+    { name = "pgvector", specifier = ">=0.4,<0.5" },
+    { name = "sqlalchemy", specifier = ">=2,<3" },
+]
+
+[[package]]
 name = "lingua-ids"
 version = "0.1.0"
 source = { directory = "../../packages/lingua_ids" }
@@ -1048,6 +1065,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "flagembedding" },
+    { name = "lingua-corpus" },
     { name = "lingua-ids" },
     { name = "marker-pdf" },
     { name = "pgvector" },
@@ -1070,6 +1088,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "flagembedding", specifier = "==1.4.2" },
+    { name = "lingua-corpus", directory = "../../packages/lingua_corpus" },
     { name = "lingua-ids", directory = "../../packages/lingua_ids" },
     { name = "marker-pdf", specifier = "==2.0.0" },
     { name = "pgvector", specifier = ">=0.4,<0.5" },

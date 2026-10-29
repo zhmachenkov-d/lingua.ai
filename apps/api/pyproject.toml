@@ -15,10 +15,12 @@ dependencies = [
   "openai>=1.0,<3",
   "pgvector>=0.4,<0.5",
   "lingua-ids",
+  "lingua-corpus",
 ]
 
 [tool.uv.sources]
 lingua-ids = { path = "../../packages/lingua_ids" }
+lingua-corpus = { path = "../../packages/lingua_corpus" }
 
 [project.optional-dependencies]
 dev = [

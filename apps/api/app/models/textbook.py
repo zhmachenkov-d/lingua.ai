@@ -1,16 +1,5 @@
-from datetime import datetime
+"""Thin re-export — corpus SoT lives in lingua_corpus."""
 
-from sqlalchemy import Text
-from sqlalchemy.orm import Mapped, mapped_column
+from lingua_corpus import Textbook
 
-from app.models.base import Base, created_at_col
-
-
-class Textbook(Base):
-    """Corpus catalog — textbook identity (AD-11). Ingest is the sole writer."""
-
-    __tablename__ = "textbook"
-
-    id: Mapped[str] = mapped_column(Text, primary_key=True)
-    title: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = created_at_col()
+__all__ = ["Textbook"]
