@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
 
 from langgraph.checkpoint.base.id import uuid6
 from openai import AsyncOpenAI
+from psycopg import AsyncConnection
 
 from app.db.checkpointer import open_checkpointer
+from app.db.config import get_database_url
 from app.db.constants import MVP_LEARNER_ID
 from app.llm.adapter import (
     BACKUP_NOTICE,
@@ -46,6 +49,13 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
 THREAD_ID: Final = str(MVP_LEARNER_ID)
 # Align with LLM REQUEST_TIMEOUT_SECONDS — hung aput must not pin the WS turn.
 CHECKPOINTER_WRITE_TIMEOUT_SECONDS: Final = 30.0
+# Distinct from bootstrap.BOOTSTRAP_LOCK_KEY; serializes aget→aput on MVP THREAD_ID.
+SNAPSHOT_WRITE_LOCK_KEY: Final = 7_265_300_117_002
+
+
+async def _after_snapshot_aget() -> None:
+    """Awaitable seam after ``aget`` (tests may delay here to force a race)."""
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +123,39 @@ def _next_channel_versions(
     return versions
 
 
+@asynccontextmanager
+async def _snapshot_write_lock(
+    database_url: str | None = None,
+) -> AsyncIterator[None]:
+    """Hold a Postgres advisory lock for the aget→aput critical section.
+
+    Dedicated connection so the lock is process-crossing and independent of the
+    checkpointer saver connection.
+    """
+    url = database_url if database_url is not None else get_database_url()
+    # Keepalives: lock session is idle while aget/aput use a separate saver conn
+    # (same pattern as bootstrap's advisory-lock connection).
+    conn = await AsyncConnection.connect(
+        url,
+        autocommit=True,
+        connect_timeout=10,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+    try:
+        await conn.execute("SELECT pg_advisory_lock(%s)", (SNAPSHOT_WRITE_LOCK_KEY,))
+        try:
+            yield
+        finally:
+            await conn.execute(
+                "SELECT pg_advisory_unlock(%s)", (SNAPSHOT_WRITE_LOCK_KEY,)
+            )
+    finally:
+        await conn.close()
+
+
 async def write_turn_snapshot(
     *,
     last_user_text: str,
@@ -125,40 +168,41 @@ async def write_turn_snapshot(
         "configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}
     }
 
-    async with open_checkpointer(database_url) as saver:
-
-        async def _persist() -> dict[str, Any]:
-            prior = await saver.aget(config)  # type: ignore[arg-type]
-            versions = _next_channel_versions(saver, prior, channels)
-            checkpoint = _checkpoint_for_snapshot(
-                last_user_text=last_user_text,
-                turn_at=turn_at,
-                channel_versions=versions,
-            )
-            write_config = config
-            if prior is not None:
-                write_config = {
-                    "configurable": {
-                        "thread_id": THREAD_ID,
-                        "checkpoint_ns": "",
-                        "checkpoint_id": prior["id"],
+    async def _persist() -> dict[str, Any]:
+        async with _snapshot_write_lock(database_url):
+            async with open_checkpointer(database_url) as saver:
+                prior = await saver.aget(config)  # type: ignore[arg-type]
+                await _after_snapshot_aget()
+                versions = _next_channel_versions(saver, prior, channels)
+                checkpoint = _checkpoint_for_snapshot(
+                    last_user_text=last_user_text,
+                    turn_at=turn_at,
+                    channel_versions=versions,
+                )
+                write_config = config
+                if prior is not None:
+                    write_config = {
+                        "configurable": {
+                            "thread_id": THREAD_ID,
+                            "checkpoint_ns": "",
+                            "checkpoint_id": prior["id"],
+                        }
                     }
-                }
-            version_map: dict[str, str | int | float] = dict(versions)
-            await saver.aput(
-                write_config,  # type: ignore[arg-type]
-                checkpoint,  # type: ignore[arg-type]
-                {"source": "update", "step": 0, "parents": {}},
-                version_map,
-            )
-            values = checkpoint["channel_values"]
-            assert isinstance(values, dict)
-            return values
+                version_map: dict[str, str | int | float] = dict(versions)
+                await saver.aput(
+                    write_config,  # type: ignore[arg-type]
+                    checkpoint,  # type: ignore[arg-type]
+                    {"source": "update", "step": 0, "parents": {}},
+                    version_map,
+                )
+                values = checkpoint["channel_values"]
+                assert isinstance(values, dict)
+                return values
 
-        values = await asyncio.wait_for(
-            _persist(),
-            timeout=CHECKPOINTER_WRITE_TIMEOUT_SECONDS,
-        )
+    values = await asyncio.wait_for(
+        _persist(),
+        timeout=CHECKPOINTER_WRITE_TIMEOUT_SECONDS,
+    )
 
     # Best-effort non-SoT Session mirror; never fail the turn / snapshot.
     try:
