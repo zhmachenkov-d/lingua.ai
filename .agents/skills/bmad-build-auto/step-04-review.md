@@ -31,11 +31,11 @@ Write `review` to `{plan_file}` frontmatter from its `route`: `quick` when `rout
 
 ### Stage the Diff
 
-Read `{baseline_revision}` from `{plan_file}` frontmatter. If `{baseline_revision}` is missing or `NO_VCS`, use best effort to determine what changed. Otherwise use the repository's version-control tooling to rewrite `{diff_file}` — the temp file staged in step-03, or a uniquely-named file in the system temp directory when this run has none — with a unified diff of all changes since `{baseline_revision}`, untracked files included. The review lenses read that file; the diff text is never pasted into their prompts.
+Before staging, apply the same `baseline_revision` validity rules as step-03 Baseline: leave a valid full SHA or `NO_VCS` unchanged; rewrite a truncated/mangled/non-resolving value via unambiguous leading short-prefix recovery to the full 40-character SHA, or set `NO_VCS` with the reason under `## Implementation Notes`. Then read `{baseline_revision}` from `{plan_file}` frontmatter. If `{baseline_revision}` is missing or `NO_VCS`, use best effort to determine what changed. Otherwise use the repository's version-control tooling to rewrite `{diff_file}` — the temp file staged in step-03, or a uniquely-named file in the system temp directory when this run has none — with a unified diff of all changes since `{baseline_revision}`, untracked files included. The review lenses read that file; the diff text is never pasted into their prompts.
 
 Set `{claims_file}` = `{plan_file}`. The plan is the change's own account of itself. It goes to the edge-case lens as a path, read only after its own tracing, and to the Quick lens for its acceptance criteria; no other lens sees it.
 
-Writing `{diff_file}` is the only change this section makes. Do NOT `git add` anything.
+Aside from rewriting an invalid `baseline_revision` as above, writing `{diff_file}` is the only change this section makes. Do NOT `git add` anything.
 
 ### Review
 

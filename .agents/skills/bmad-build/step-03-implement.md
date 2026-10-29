@@ -18,7 +18,11 @@ Verify `{plan_file}` resolves to a non-empty path and the file exists on disk. I
 
 ### Baseline
 
-Capture `baseline_revision` (current HEAD, or `NO_VCS` if version control is unavailable) into `{plan_file}` frontmatter before making any changes. If `baseline_revision` already holds a value (resumed run), preserve it — never overwrite it.
+Set or repair `baseline_revision` in `{plan_file}` frontmatter before making any other changes:
+
+1. If `baseline_revision` already holds `NO_VCS`, or a value matching `^[0-9a-f]{40}$` for which `git rev-parse` of the exact stored string succeeds and returns that same SHA, leave it unchanged.
+2. Else if it already holds a non-empty value that fails that check: rewrite it — try `git rev-parse` on an unambiguous leading short hex prefix of the stored string (7–12 characters) and, when that uniquely resolves, write the full 40-character lowercase hex SHA returned; if recovery fails, set `NO_VCS` and record the reason under `## Implementation Notes`. Never leave a non-resolving value as-is.
+3. Else (empty / unset): if version control is unavailable, set `NO_VCS`. Otherwise run the repository's equivalent of `git rev-parse HEAD`, take the object name from stdout after trimming trailing whitespace/newlines only (do not otherwise edit or retype), and write that 40-character lowercase hex SHA. Reject any candidate that does not match `^[0-9a-f]{40}$`; re-run the capture rather than landing a short, truncated, or mangled value.
 
 ### Implement
 
