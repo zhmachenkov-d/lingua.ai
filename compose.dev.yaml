@@ -98,6 +98,7 @@ services:
     network_mode: host
     environment:
       TEXTBOOKS_DIR: /textbooks
+      # Tracer co-ingests SB then WB; both PDFs must be present under textbooks/.
       INGEST_MODE: tracer
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}

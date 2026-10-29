@@ -6,12 +6,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 from app.persist.config import DatabaseConfigError, get_database_url, to_sqlalchemy_url
 from app.persist.store import (
+    EF4_BEG_SB_TITLE,
+    EF4_BEG_WB_TITLE,
     REQUIRED_TABLES,
     CorpusSchemaMissing,
     ensure_corpus_schema,
+    has_ready_unit,
+    list_ready_unit_refs,
+    title_for_textbook,
     upsert_not_ready_unit,
     upsert_ready_unit,
     upsert_review_unit,
+    upsert_textbook,
 )
 
 
@@ -222,3 +228,62 @@ def test_upsert_ready_requires_chunks() -> None:
                 model_name="BAAI/bge-m3",
                 dims=1024,
             )
+
+
+def test_title_for_textbook_by_id() -> None:
+    assert title_for_textbook("ef4-beg-sb") == EF4_BEG_SB_TITLE
+    assert title_for_textbook("ef4-beg-wb") == EF4_BEG_WB_TITLE
+    assert title_for_textbook("unknown-book") == "unknown-book"
+
+
+def test_upsert_textbook_uses_wb_title() -> None:
+    from app.persist.models import Textbook
+
+    stored: dict[str, Any] = {"textbook": None}
+
+    class FakeSession:
+        def get(self, model, key):  # noqa: ANN001
+            if model is Textbook and stored["textbook"] and stored["textbook"].id == key:
+                return stored["textbook"]
+            return None
+
+        def add(self, obj) -> None:  # noqa: ANN001
+            if isinstance(obj, Textbook):
+                stored["textbook"] = obj
+
+        def flush(self) -> None:
+            return None
+
+        def get_bind(self):
+            return MagicMock()
+
+    session = FakeSession()
+    with patch("app.persist.store.ensure_corpus_schema"):
+        row = upsert_textbook(session, textbook_id="ef4-beg-wb")  # type: ignore[arg-type]
+    assert row.id == "ef4-beg-wb"
+    assert row.title == EF4_BEG_WB_TITLE
+
+
+def test_has_ready_and_list_ready_filter_by_textbook() -> None:
+    """SB DoD helper must not treat WB-only Ready as Tutor Ready."""
+    session = MagicMock()
+    with (
+        patch("app.persist.store.ensure_corpus_schema"),
+        patch("app.persist.store.select", return_value=MagicMock()),
+    ):
+        session.scalar.return_value = None
+        session.scalars.return_value = MagicMock(all=lambda: [])
+        assert has_ready_unit(session, "ef4-beg-sb") is False
+        assert list_ready_unit_refs(session, "ef4-beg-sb") == []
+
+        session.scalar.return_value = "ef4-beg-wb/1A"
+        session.scalars.return_value = MagicMock(all=lambda: ["ef4-beg-wb/1A"])
+        assert has_ready_unit(session, "ef4-beg-wb") is True
+        assert list_ready_unit_refs(session, "ef4-beg-wb") == ["ef4-beg-wb/1A"]
+
+        # SB-filtered view stays empty when only WB Ready was queried separately.
+        session.scalar.return_value = None
+        session.scalars.return_value = MagicMock(all=lambda: [])
+        assert has_ready_unit(session, "ef4-beg-sb") is False
+        assert list_ready_unit_refs(session, "ef4-beg-sb") == []
+

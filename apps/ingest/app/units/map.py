@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.units import ef4_beg_sb
+from app.units import ef4_beg_sb, ef4_beg_wb
 from app.units.span import UnitSpan
 
 _REGISTRY: dict[str, tuple[UnitSpan, ...]] = {
     ef4_beg_sb.TEXTBOOK_ID: ef4_beg_sb.UNITS,
+    ef4_beg_wb.TEXTBOOK_ID: ef4_beg_wb.UNITS,
 }
 
 

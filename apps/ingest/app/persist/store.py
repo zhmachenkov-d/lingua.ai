@@ -8,6 +8,8 @@ from sqlalchemy import create_engine, delete, inspect, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from lingua_ids import EF4_BEG_SB_ID, EF4_BEG_WB_ID
+
 from app.persist.config import get_database_url, to_sqlalchemy_url
 from app.persist.models import Chunk, Embedding, Textbook, TextbookUnit
 
@@ -16,6 +18,17 @@ logger = logging.getLogger(__name__)
 REQUIRED_TABLES = frozenset({"textbook", "textbook_unit", "chunk", "embedding"})
 
 EF4_BEG_SB_TITLE = "English File 4th edition Beginner Students' Book"
+EF4_BEG_WB_TITLE = "English File 4th edition Beginner Workbook"
+
+_TEXTBOOK_TITLES: dict[str, str] = {
+    EF4_BEG_SB_ID: EF4_BEG_SB_TITLE,
+    EF4_BEG_WB_ID: EF4_BEG_WB_TITLE,
+}
+
+
+def title_for_textbook(textbook_id: str) -> str:
+    """Resolve Textbook.title by id; unknown ids fall back to the id string."""
+    return _TEXTBOOK_TITLES.get(textbook_id, textbook_id)
 
 
 class CorpusSchemaMissing(RuntimeError):
@@ -54,19 +67,49 @@ def upsert_textbook(
     session: Session,
     *,
     textbook_id: str,
-    title: str = EF4_BEG_SB_TITLE,
+    title: str | None = None,
 ) -> Textbook:
+    resolved = title if title is not None else title_for_textbook(textbook_id)
     ensure_corpus_schema(session)
     row = session.get(Textbook, textbook_id)
     if row is None:
-        row = Textbook(id=textbook_id, title=title)
+        row = Textbook(id=textbook_id, title=resolved)
         session.add(row)
         session.flush()
         return row
-    if row.title != title:
-        row.title = title
+    if row.title != resolved:
+        row.title = resolved
         session.flush()
     return row
+
+
+def has_ready_unit(session: Session, textbook_id: str) -> bool:
+    """True when ≥1 Ready unit exists under ``textbook_id``."""
+    ensure_corpus_schema(session)
+    row = session.scalar(
+        select(TextbookUnit.unit_ref)
+        .where(
+            TextbookUnit.textbook_id == textbook_id,
+            TextbookUnit.status == "Ready",
+        )
+        .limit(1)
+    )
+    return row is not None
+
+
+def list_ready_unit_refs(session: Session, textbook_id: str) -> list[str]:
+    """List Ready ``unit_ref``s for one textbook (Tutor DoD filters SB id)."""
+    ensure_corpus_schema(session)
+    return list(
+        session.scalars(
+            select(TextbookUnit.unit_ref)
+            .where(
+                TextbookUnit.textbook_id == textbook_id,
+                TextbookUnit.status == "Ready",
+            )
+            .order_by(TextbookUnit.unit_ref)
+        ).all()
+    )
 
 
 def _get_or_create_unit(
