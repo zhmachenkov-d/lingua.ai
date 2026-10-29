@@ -3,8 +3,11 @@ from __future__ import annotations
 import io
 import json
 from pathlib import Path
+from unittest.mock import patch
 
-from app.cli import run_metrics_job
+import pytest
+
+from app.cli import main, run_metrics_job
 from app.parse.result import METRIC_JSON_KEYS, ParseResult
 
 
@@ -182,3 +185,51 @@ def test_parse_failed_status_when_both_fail(tmp_path: Path) -> None:
     payload = json.loads(stdout.getvalue().strip())
     assert payload["status"] == "parse_failed"
     assert set(METRIC_JSON_KEYS) <= set(payload)
+
+
+def test_metrics_ignores_ready_sweep_and_writes_no_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """INGEST_MODE=metrics never enters tracer/Ready mint, even with sweep=full."""
+    monkeypatch.setenv("INGEST_MODE", "metrics")
+    monkeypatch.setenv("INGEST_READY_SWEEP", "full")
+    textbooks = tmp_path / "textbooks"
+    textbooks.mkdir()
+    sb_name = "English_File_4th_edition_Beginner_Students_book.pdf"
+    wb_name = "English_File_4th_edition_Beginner_Workbook.pdf"
+    (textbooks / sb_name).write_bytes(b"%PDF")
+    (textbooks / wb_name).write_bytes(b"%PDF")
+    monkeypatch.setenv("TEXTBOOKS_DIR", str(textbooks))
+
+    ok = ParseResult(
+        text="aaa",
+        page_count=1,
+        mean_chars_per_page=3.0,
+        printable_ratio=1.0,
+        wall_time_ms=10,
+        adapter_id="ocrmypdf_tesseract",
+        status="ok",
+    )
+    primary = FakeAdapter(
+        "ocrmypdf_tesseract",
+        {sb_name: ok, wb_name: ok},
+    )
+    fallback = FakeAdapter("pymupdf_text", {})
+    stdout = io.StringIO()
+
+    with (
+        patch("app.cli.run_tracer_job") as tracer,
+        patch("app.cli.ready_sweep") as sweep,
+        patch("app.cli._default_primary_adapter", return_value=primary),
+        patch("app.parse.pymupdf_text.PyMuPDFTextAdapter", return_value=fallback),
+        patch("sys.stdout", stdout),
+    ):
+        code = main()
+
+    assert code == 0
+    tracer.assert_not_called()
+    sweep.assert_not_called()
+    lines = [json.loads(line) for line in stdout.getvalue().strip().splitlines()]
+    assert len(lines) == 2
+    assert all(set(METRIC_JSON_KEYS) <= set(payload) for payload in lines)
+    assert all(payload["status"] == "ok" for payload in lines)

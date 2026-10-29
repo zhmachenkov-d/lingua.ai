@@ -207,7 +207,7 @@ npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 
 ### Ingest Ready corpus
 
-Compose profile `ingest` (not started by default `up`). Default `INGEST_MODE=tracer` OCR-parses owner PDFs (`PARSE_PRIMARY=ocrmypdf`), hard-gates units, and upserts **corpus / Ready / embeddings** into Postgres (`depends_on: db`). Writes never touch Session, LearnerProfile, FSRS, or ErrorLog.
+Compose profile `ingest` (not started by default `up`). Default `INGEST_MODE=tracer` OCR-parses owner PDFs (`PARSE_PRIMARY=ocrmypdf`), hard-gates units, and upserts **corpus / Ready / embeddings** into Postgres (`depends_on: db`). Default Ready sweep stops after the first passing unit; set `INGEST_READY_SWEEP=full` to walk all `ef4-beg-sb` map units (WB stays first-Ready). Writes never touch Session, LearnerProfile, FSRS, or ErrorLog.
 
 **Place PDFs (gitignored — do not commit):**
 
