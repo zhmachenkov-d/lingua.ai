@@ -69,9 +69,10 @@ def test_fixture_path_and_env_refuse(
     fixture_pdf.write_bytes(b"%PDF")
     assert is_fixture_source(fixture_pdf) is True
 
-    text = _rich_text(5)
+    # Soft pair would match (high image + low chars) but fixture wins first.
+    soft_text = "hi"
     result = evaluate_hard_gate(
-        text, page_count=2, pdf_path=fixture_pdf, image_area_ratio=0.9
+        soft_text, page_count=2, pdf_path=fixture_pdf, image_area_ratio=0.9
     )
     assert result.passed is False
     assert result.disposition == "NotReady"
@@ -83,7 +84,7 @@ def test_fixture_path_and_env_refuse(
     monkeypatch.setenv("INGEST_SOURCE_KIND", "fixture")
     assert is_fixture_source(real) is True
     gated = evaluate_hard_gate(
-        text, page_count=2, pdf_path=real, image_area_ratio=0.9
+        soft_text, page_count=2, pdf_path=real, image_area_ratio=0.9
     )
     assert gated.gate_reason == "fixture_refuse"
     assert gated.disposition == "NotReady"

@@ -11,8 +11,9 @@ def image_area_ratio(
     """Mean-of-pages clipped raster image bbox area / page area for a span.
 
     Per page: sum of raster image bbox areas clipped to the page rect, divided
-    by page area (sum, not union). Drawings/vectors are ignored. Pages outside
-    the document are skipped; empty span yields 0.0.
+    by page area (sum, not union). Drawings/vectors are ignored. Mean is over
+    the full page span; pages outside the document count as 0.0. Empty span
+    (page_end < page_start) yields 0.0.
     """
     import pymupdf
 

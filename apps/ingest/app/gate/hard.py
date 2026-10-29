@@ -104,12 +104,6 @@ def evaluate_hard_gate(
     both soft conditions match.
     """
     mean, printable = compute_yield_metrics(text, page_count)
-    img_ratio = _resolve_image_area_ratio(
-        image_area_ratio=image_area_ratio,
-        unit_pdf_path=unit_pdf_path if unit_pdf_path is not None else pdf_path,
-        page_start=page_start,
-        page_end=page_end,
-    )
     mean_thresh = _threshold_mean_chars()
     printable_thresh = _threshold_printable()
     image_thresh = _threshold_image_area()
@@ -118,7 +112,6 @@ def evaluate_hard_gate(
     metrics: dict[str, Any] = {
         "mean_chars_per_page": mean,
         "printable_ratio": printable,
-        "image_area_ratio": img_ratio,
         "page_count": page_count,
         "char_count": len(text),
         "mean_chars_threshold": mean_thresh,
@@ -154,6 +147,16 @@ def evaluate_hard_gate(
             gate_reason="structure_zero",
             gate_metrics=metrics,
         )
+
+    # Measure only after early hard short-circuits so PyMuPDF failures
+    # cannot preempt fixture_refuse / parse_failed / structure_zero.
+    img_ratio = _resolve_image_area_ratio(
+        image_area_ratio=image_area_ratio,
+        unit_pdf_path=unit_pdf_path if unit_pdf_path is not None else pdf_path,
+        page_start=page_start,
+        page_end=page_end,
+    )
+    metrics["image_area_ratio"] = img_ratio
 
     if printable < printable_thresh:
         return GateResult(
