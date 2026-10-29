@@ -120,16 +120,38 @@ def format_blocked_redispatch_steps(
     return "\n".join(lines)
 
 
-def format_halt_reinvoke_steps(*, detail: str, cli_args: str, model: str) -> str:
-    return "\n".join(
-        [
-            "Next steps:",
-            f"1. {detail}",
-            "2. Act on the gate (refine / approve / close epic / fix blocked), then re-invoke:",
-            f"   uv run scripts/bmad_factory.py --verbose --model={model} {cli_args}",
-            "   (use -y to ack plan-checkpoint / epic-closure when appropriate)",
-        ]
+def format_halt_reinvoke_steps(
+    *,
+    detail: str,
+    cli_args: str,
+    model: str,
+    run_id: str | None = None,
+) -> str:
+    resume_bit = (
+        f"   or: uv run scripts/bmad_factory.py --resume {run_id} --verbose "
+        f"--model={model}"
+        if run_id
+        else None
     )
+    stop_bit = (
+        f"   if a live run is stuck: uv run scripts/bmad_factory.py --stop {run_id}"
+        if run_id
+        else None
+    )
+    lines = [
+        "Next steps:",
+        f"1. {detail}",
+        "2. Act on the gate (refine / approve / close epic / fix blocked), then re-invoke:",
+        f"   uv run scripts/bmad_factory.py --verbose --model={model} {cli_args}",
+    ]
+    if resume_bit:
+        lines.append(resume_bit)
+    lines.append(
+        "   (use -y to ack plan-checkpoint / epic-closure when appropriate)"
+    )
+    if stop_bit:
+        lines.append(stop_bit)
+    return "\n".join(lines)
 
 
 def set_plan_status(path: Path, status: str) -> None:

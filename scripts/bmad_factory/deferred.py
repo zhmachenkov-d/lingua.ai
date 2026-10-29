@@ -10,12 +10,27 @@ from pathlib import Path
 from typing import Any
 
 from .agent import agent_call_limits, run_cursor_agent, usage_dict
-from .constants import POLICY_DIRNAME, SHUTDOWN_ERROR, FactoryHalt, log
+from .constants import (
+    POLICY_DIRNAME,
+    SHUTDOWN_DIRTY_TREE,
+    SHUTDOWN_ERROR,
+    FactoryHalt,
+    log,
+)
 from .pick import THOROUGH_ALWAYS
 from .pipeline import build_prompt
 from .policy import Policy
 from .report import RunReport, UnitReport, log_cumulative_tokens
-from .run_state import RunState, UnitAttemptState, append_journal, create_run, save_run
+from .run_state import (
+    PAUSE_DIRTY_TREE,
+    PAUSE_ERROR,
+    RunState,
+    UnitAttemptState,
+    append_journal,
+    create_run,
+    pause_run,
+    save_run,
+)
 from .scm import (
     checkout_work_branch,
     ensure_push_pr_and_merge,
@@ -338,19 +353,19 @@ def _run_bundle(
     save_run(project_root, run_state)
 
 
-def run_deferred(
-    *,
+def triage_path_for(project_root: Path, run_id: str) -> Path:
+    return project_root / POLICY_DIRNAME / "runs" / run_id / "triage.json"
+
+
+def _synthetic_ref(title: str) -> str:
+    return f"deferred-{re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')}"
+
+
+def _load_entries(
     project_root: Path,
-    report: RunReport,
     policy: Policy,
-    model: str,
-    dry_run: bool,
-    no_prompt: bool,
-    no_push: bool = False,
-    yes: bool = False,
-    only: list[str] | None = None,
-) -> RunState:
-    """Triage deferred-work ledgers and execute decision-free bundles."""
+    only: list[str] | None,
+) -> tuple[list[Path], list[DeferredEntry], dict[str, Path]]:
     ledgers = find_initiative_ledgers(
         project_root, ledger_name=policy.sweep.ledger_name
     )
@@ -366,22 +381,32 @@ def run_deferred(
                 continue
             entries.append(entry)
             ledger_by_key[entry.key] = ledger
+    return ledgers, entries, ledger_by_key
 
-    run_state = create_run(
-        project_root,
-        mode="deferred",
-        model=model,
-        dry_run=dry_run,
-        yes=yes,
-        no_push=no_push,
-        meta={"ledgers": [str(p) for p in ledgers], "entry_count": len(entries)},
-    )
-    if not entries:
-        log.info("deferred: no open entries")
-        run_state.status = "completed"
-        save_run(project_root, run_state)
-        return run_state
 
+def _load_existing_triage(
+    triage_path: Path, known_keys: set[str]
+) -> SweepTriage | None:
+    if not triage_path.is_file():
+        return None
+    try:
+        return parse_triage_response(
+            triage_path.read_text(encoding="utf-8"), known_keys=known_keys
+        )
+    except (FactoryHalt, json.JSONDecodeError, OSError) as err:
+        log.warning("deferred triage.json unusable (%s); will re-triage", err)
+        return None
+
+
+def _run_triage_agents(
+    *,
+    project_root: Path,
+    policy: Policy,
+    model: str,
+    dry_run: bool,
+    entries: list[DeferredEntry],
+    triage_path: Path,
+) -> SweepTriage | None:
     known = {e.key for e in entries}
     prompt = _triage_prompt(entries)
     agent = run_cursor_agent(
@@ -392,15 +417,10 @@ def run_deferred(
         **agent_call_limits(policy.limits),
     )
     if dry_run:
-        run_state.status = "completed"
-        save_run(project_root, run_state)
-        return run_state
+        return None
     if agent.error:
         raise FactoryHalt(SHUTDOWN_ERROR, agent.error)
 
-    triage_path = (
-        project_root / POLICY_DIRNAME / "runs" / run_state.run_id / "triage.json"
-    )
     write_prompt = (
         prompt
         + f"\n\nWrite the JSON result to `{triage_path}` exactly (create parents)."
@@ -419,42 +439,95 @@ def run_deferred(
         raise FactoryHalt(
             SHUTDOWN_ERROR, f"deferred triage did not write {triage_path}"
         )
-    triage = parse_triage_response(
+    return parse_triage_response(
         triage_path.read_text(encoding="utf-8"), known_keys=known
     )
 
-    for key in triage.resolved_keys:
-        path = ledger_by_key.get(key)
-        if path:
-            close_ledger_entries(path, {key})
 
-    if not no_prompt and policy.sweep.attended_prompt:
-        triage = _prompt_decisions(triage)
-    else:
-        triage.bundles = [b for b in triage.bundles if not b.needs_decision]
-
-    append_journal(
-        project_root,
-        run_state.run_id,
-        {
-            "event": "deferred_triage",
-            "resolved": triage.resolved_keys,
-            "bundles": [b.title for b in triage.bundles],
-            "blocked": triage.blocked_keys,
-            "skip": triage.skip_keys,
-        },
-    )
-
+def _filter_remaining_bundles(
+    triage: SweepTriage,
+    *,
+    completed_refs: set[str],
+    only: list[str] | None,
+) -> list[SweepBundle]:
+    only_filters = [o.strip().lower() for o in (only or []) if o and o.strip()]
+    remaining: list[SweepBundle] = []
     for bundle in triage.bundles:
+        synthetic = _synthetic_ref(bundle.title)
+        if synthetic in completed_refs:
+            continue
+        if only_filters:
+            hay = " ".join(
+                [bundle.title, bundle.intent, *bundle.entry_keys]
+            ).lower()
+            if not any(f in hay for f in only_filters):
+                continue
+        remaining.append(bundle)
+    return remaining
+
+
+def _execute_deferred_bundles(
+    *,
+    project_root: Path,
+    report: RunReport,
+    policy: Policy,
+    run_state: RunState,
+    model: str,
+    dry_run: bool,
+    no_push: bool,
+    triage: SweepTriage,
+    ledger_by_key: dict[str, Path],
+    only: list[str] | None,
+) -> None:
+    # Finish an in-flight bundle before scanning remaining triage items.
+    current = run_state.current_unit
+    if (
+        current
+        and current.kind == "bundle"
+        and current.ref
+        and current.ref not in run_state.completed_refs
+        and current.phase not in {"done", ""}
+    ):
+        matching = next(
+            (b for b in triage.bundles if _synthetic_ref(b.title) == current.ref),
+            None,
+        )
+        if matching and matching.intent.strip():
+            log.info("deferred resume in-flight bundle ref=%s", current.ref)
+            try:
+                _run_bundle(
+                    project_root=project_root,
+                    report=report,
+                    policy=policy,
+                    run_state=run_state,
+                    model=model,
+                    dry_run=dry_run,
+                    no_push=no_push,
+                    synthetic_ref=current.ref,
+                    intent=matching.intent,
+                )
+            except FactoryHalt as halt:
+                _handle_bundle_halt(
+                    project_root, run_state, halt, title=matching.title
+                )
+            for key in matching.entry_keys:
+                path = ledger_by_key.get(key)
+                if path:
+                    close_ledger_entries(path, {key})
+
+    remaining = _filter_remaining_bundles(
+        triage,
+        completed_refs=set(run_state.completed_refs),
+        only=only,
+    )
+    for bundle in remaining:
         if not bundle.intent.strip():
             log.warning("skip bundle with empty intent: %s", bundle.title)
             continue
         log.info(
             "deferred bundle build title=%s keys=%s", bundle.title, bundle.entry_keys
         )
-        synthetic = (
-            f"deferred-{re.sub(r'[^a-z0-9]+', '-', bundle.title.lower()).strip('-')}"
-        )
+        synthetic = _synthetic_ref(bundle.title)
         try:
             _run_bundle(
                 project_root=project_root,
@@ -462,25 +535,203 @@ def run_deferred(
                 policy=policy,
                 run_state=run_state,
                 model=model,
-                dry_run=False,
+                dry_run=dry_run,
                 no_push=no_push,
                 synthetic_ref=synthetic,
                 intent=bundle.intent,
             )
         except FactoryHalt as halt:
-            if halt.shutdown in {"blocked", "error", "dirty_tree"}:
-                log.warning(
-                    "deferred bundle halted title=%s shutdown=%s",
-                    bundle.title,
-                    halt.shutdown,
-                )
-                continue
-            raise
+            _handle_bundle_halt(project_root, run_state, halt, title=bundle.title)
         for key in bundle.entry_keys:
             path = ledger_by_key.get(key)
             if path:
                 close_ledger_entries(path, {key})
 
+
+def _handle_bundle_halt(
+    project_root: Path,
+    run_state: RunState,
+    halt: FactoryHalt,
+    *,
+    title: str,
+) -> None:
+    """Skip blocked bundles; pause + re-raise on dirty_tree / fatal error."""
+    if halt.shutdown == "blocked":
+        log.warning(
+            "deferred bundle blocked title=%s detail=%s", title, halt.detail
+        )
+        append_journal(
+            project_root,
+            run_state.run_id,
+            {
+                "event": "deferred_bundle_blocked",
+                "title": title,
+                "detail": halt.detail,
+            },
+        )
+        run_state.current_unit = None
+        save_run(project_root, run_state)
+        return
+    if halt.shutdown in {SHUTDOWN_DIRTY_TREE, "dirty_tree", SHUTDOWN_ERROR, "error"}:
+        reason = (
+            PAUSE_DIRTY_TREE
+            if halt.shutdown in {SHUTDOWN_DIRTY_TREE, "dirty_tree"}
+            else PAUSE_ERROR
+        )
+        log.warning(
+            "deferred bundle halted title=%s shutdown=%s — pausing run",
+            title,
+            halt.shutdown,
+        )
+        if run_state.status == "running":
+            pause_run(
+                project_root,
+                run_state,
+                reason=reason,
+                detail=halt.detail or halt.shutdown,
+            )
+        raise halt
+    raise halt
+
+
+def continue_deferred(
+    *,
+    project_root: Path,
+    report: RunReport,
+    policy: Policy,
+    run_state: RunState,
+    model: str,
+    dry_run: bool,
+    no_prompt: bool,
+    no_push: bool = False,
+    only: list[str] | None = None,
+) -> RunState:
+    """Continue (or finish triage for) an existing deferred run."""
+    ledgers, entries, ledger_by_key = _load_entries(project_root, policy, only)
+    run_state.meta = {
+        **dict(run_state.meta or {}),
+        "ledgers": [str(p) for p in ledgers],
+        "entry_count": len(entries),
+    }
+    save_run(project_root, run_state)
+
+    if not entries and not run_state.current_unit:
+        # Allow resume of a run that already has triage/completed work with no
+        # open ledger entries left.
+        triage_path = triage_path_for(project_root, run_state.run_id)
+        if not triage_path.is_file() and not run_state.completed_refs:
+            log.info("deferred: no open entries")
+            run_state.status = "completed"
+            save_run(project_root, run_state)
+            return run_state
+
+    known = {e.key for e in entries}
+    triage_file = triage_path_for(project_root, run_state.run_id)
+    triage = _load_existing_triage(triage_file, known_keys=known)
+    reused = triage is not None
+
+    if triage is None:
+        if not entries:
+            log.info("deferred: no open entries")
+            run_state.status = "completed"
+            save_run(project_root, run_state)
+            return run_state
+        triage = _run_triage_agents(
+            project_root=project_root,
+            policy=policy,
+            model=model,
+            dry_run=dry_run,
+            entries=entries,
+            triage_path=triage_file,
+        )
+        if dry_run or triage is None:
+            run_state.status = "completed"
+            save_run(project_root, run_state)
+            return run_state
+
+        for key in triage.resolved_keys:
+            path = ledger_by_key.get(key)
+            if path:
+                close_ledger_entries(path, {key})
+
+        if not no_prompt and policy.sweep.attended_prompt:
+            triage = _prompt_decisions(triage)
+        else:
+            triage.bundles = [b for b in triage.bundles if not b.needs_decision]
+
+        append_journal(
+            project_root,
+            run_state.run_id,
+            {
+                "event": "deferred_triage",
+                "resolved": triage.resolved_keys,
+                "bundles": [b.title for b in triage.bundles],
+                "blocked": triage.blocked_keys,
+                "skip": triage.skip_keys,
+            },
+        )
+    else:
+        log.info(
+            "deferred resume reusing triage.json run_id=%s reused=%s",
+            run_state.run_id,
+            reused,
+        )
+        if not no_prompt and policy.sweep.attended_prompt:
+            triage = _prompt_decisions(triage)
+        else:
+            triage.bundles = [b for b in triage.bundles if not b.needs_decision]
+
+    _execute_deferred_bundles(
+        project_root=project_root,
+        report=report,
+        policy=policy,
+        run_state=run_state,
+        model=model,
+        dry_run=False if not dry_run else True,
+        no_push=no_push,
+        triage=triage,
+        ledger_by_key=ledger_by_key,
+        only=only,
+    )
+
     run_state.status = "completed"
     save_run(project_root, run_state)
     return run_state
+
+
+def run_deferred(
+    *,
+    project_root: Path,
+    report: RunReport,
+    policy: Policy,
+    model: str,
+    dry_run: bool,
+    no_prompt: bool,
+    no_push: bool = False,
+    yes: bool = False,
+    only: list[str] | None = None,
+    run_state: RunState | None = None,
+) -> RunState:
+    """Triage deferred-work ledgers and execute decision-free bundles."""
+    if run_state is None:
+        ledgers, entries, _ledger_by_key = _load_entries(project_root, policy, only)
+        run_state = create_run(
+            project_root,
+            mode="deferred",
+            model=model,
+            dry_run=dry_run,
+            yes=yes,
+            no_push=no_push,
+            meta={"ledgers": [str(p) for p in ledgers], "entry_count": len(entries)},
+        )
+    return continue_deferred(
+        project_root=project_root,
+        report=report,
+        policy=policy,
+        run_state=run_state,
+        model=model,
+        dry_run=dry_run,
+        no_prompt=no_prompt,
+        no_push=no_push,
+        only=only,
+    )

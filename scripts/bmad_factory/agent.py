@@ -239,6 +239,14 @@ def _soft_close_agent(agent: Any, err_type: type[BaseException]) -> None:
         log.warning("agent close failed: %s", close_err)
 
 
+_active_agent_run: Any | None = None
+
+
+def _set_active_agent_run(run: Any | None) -> None:
+    global _active_agent_run
+    _active_agent_run = run
+
+
 def _soft_cancel_run(run: Any) -> None:
     if run is None:
         return
@@ -246,6 +254,11 @@ def _soft_cancel_run(run: Any) -> None:
         run.cancel()
     except Exception as err:  # noqa: BLE001 — best-effort cancel
         log.warning("agent cancel failed: %s", getattr(err, "message", None) or err)
+
+
+def cancel_active_agent() -> None:
+    """Best-effort cancel of the in-flight Cursor SDK run (signal / --stop path)."""
+    _soft_cancel_run(_active_agent_run)
 
 
 def _retry_delay(err: Any, attempt: int) -> float:
@@ -480,13 +493,17 @@ def run_cursor_agent(
 
             phase = "send"
             run = agent.send(prompt)
+            _set_active_agent_run(run)
             run_id = getattr(run, "run_id", None) or getattr(run, "id", None)
             log.info("agent sent agent_id=%s run_id=%s", agent_id, run_id)
 
             phase = "stream"
-            outcome = _stream_run_with_limits(
-                run, timeout_s=timeout_s, max_tokens=max_tokens
-            )
+            try:
+                outcome = _stream_run_with_limits(
+                    run, timeout_s=timeout_s, max_tokens=max_tokens
+                )
+            finally:
+                _set_active_agent_run(None)
             if outcome.error is None:
                 log.info(
                     "agent finished status=%s agent_id=%s run_id=%s %s",
@@ -502,12 +519,12 @@ def run_cursor_agent(
                 run_id=str(run_id) if run_id else None,
                 error=outcome.error,
             )
-        except KeyboardInterrupt as err:
+        except KeyboardInterrupt:
+            _soft_cancel_run(_active_agent_run)
+            _set_active_agent_run(None)
             _soft_close_agent(agent, CursorAgentError)
             agent = None
-            raise FactoryHalt(
-                SHUTDOWN_ERROR, f"interrupted during agent {phase}"
-            ) from err
+            raise
         except CursorAgentError as err:
             _soft_close_agent(agent, CursorAgentError)
             agent = None
@@ -533,6 +550,7 @@ def run_cursor_agent(
                 f"(retryable={err.is_retryable})",
             ) from err
         finally:
+            _set_active_agent_run(None)
             _soft_close_agent(agent, CursorAgentError)
 
     raise FactoryHalt(SHUTDOWN_ERROR, "Cursor agent create/send retries exhausted")

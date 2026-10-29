@@ -25,6 +25,9 @@ PAUSE_PLAN_CHECKPOINT = "plan_checkpoint"
 PAUSE_DONE_CHECKPOINT = "done_checkpoint"
 PAUSE_BLOCKED = "blocked"
 PAUSE_ERROR = "error"
+PAUSE_DIRTY_TREE = "dirty_tree"
+PAUSE_SIGNAL = "signal"
+PAUSE_STOPPED = "stopped"
 PAUSE_PICK_PLAN_CHECKPOINT = "plan-checkpoint"
 PAUSE_PICK_EPIC_BOUNDARY = "epic-boundary"
 PAUSE_PICK_ESCALATION = "escalation"
@@ -299,6 +302,42 @@ def list_runs(project_root: Path) -> list[RunState]:
     return out
 
 
+def classify_run(
+    project_root: Path,
+    state: RunState,
+    *,
+    now: float | None = None,
+    stale_after_s: float = 3600.0,
+) -> str:
+    """Classify a run as completed|aborted|paused|running|stale.
+
+    Canonical stale = ``status=running`` without a live run lock holder.
+    ``stale_after_s`` / age are secondary signals for status payloads only.
+    """
+    del now, stale_after_s  # age is reported by callers; not required for the label
+    status = state.status
+    if status in {"completed", "aborted", "paused"}:
+        return status
+    if status == "running":
+        from .run_lock import is_run_alive  # local: run_lock may import constants only
+
+        if is_run_alive(project_root, state.run_id):
+            return "running"
+        return "stale"
+    return status or "unknown"
+
+
+def run_age_s(state: RunState, *, now: float | None = None) -> float:
+    stamp = state.updated_at or state.created_at or 0.0
+    return max(0.0, (now if now is not None else time.time()) - stamp)
+
+
+def is_resumable_state(project_root: Path, state: RunState) -> bool:
+    """Paused runs and orphan (stale) running runs may be resumed."""
+    classified = classify_run(project_root, state)
+    return classified in {"paused", "stale"}
+
+
 def find_resumable_run(
     project_root: Path,
     *,
@@ -306,9 +345,9 @@ def find_resumable_run(
     ticket: str | None = None,
     epic: str | None = None,
 ) -> RunState | None:
-    """Latest paused run matching mode + scope (for halt+re-invoke)."""
+    """Latest paused or stale run matching mode + scope (for halt+re-invoke)."""
     for state in list_runs(project_root):
-        if state.status != "paused":
+        if not is_resumable_state(project_root, state):
             continue
         if state.mode != mode:
             continue
@@ -320,8 +359,18 @@ def find_resumable_run(
     return None
 
 
-def format_run_brief(state: RunState) -> str:
+def format_run_brief(
+    state: RunState,
+    *,
+    classified: str | None = None,
+    alive: bool | None = None,
+    pid: int | None = None,
+) -> str:
+    label = classified or state.status
     pause = f" pause={state.pause_reason}" if state.pause_reason else ""
     ticket = f" ticket={state.pause_ticket}" if state.pause_ticket else ""
     done = f" done={','.join(state.completed_refs)}" if state.completed_refs else ""
-    return f"{state.run_id}  {state.status}  mode={state.mode}{pause}{ticket}{done}"
+    live = ""
+    if label == "running" and pid is not None or alive is True and pid is not None:
+        live = f" pid={pid}"
+    return f"{state.run_id}  {label}  mode={state.mode}{live}{pause}{ticket}{done}"
