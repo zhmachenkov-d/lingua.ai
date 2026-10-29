@@ -342,6 +342,7 @@ def process_ticket(
             ),
             cli_args=cli_args,
             model=model,
+            run_id=run_state.run_id,
         )
         report.shutdown = SHUTDOWN_PLAN_CHECKPOINT
         report.shutdown_detail = detail
@@ -410,7 +411,10 @@ def process_ticket(
         )
         report.add(unit)
         report.next_steps = format_halt_reinvoke_steps(
-            detail=reason, cli_args=cli_args, model=model
+            detail=reason,
+            cli_args=cli_args,
+            model=model,
+            run_id=run_state.run_id,
         )
         pause_run(
             project_root,
@@ -454,6 +458,7 @@ def process_ticket(
             ),
             cli_args=cli_args,
             model=model,
+            run_id=run_state.run_id,
         )
         report.shutdown = SHUTDOWN_DONE_CHECKPOINT
         report.shutdown_detail = detail

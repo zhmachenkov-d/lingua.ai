@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 from .deferred import list_open_deferred
 from .policy import Policy, load_policy
-from .run_state import RunState, format_run_brief, list_runs, load_run
+from .run_lock import is_run_alive, lock_holder_pid
+from .run_state import (
+    RunState,
+    classify_run,
+    format_run_brief,
+    list_runs,
+    load_run,
+    run_age_s,
+)
 from .tickets_io import tickets_status
 
 
@@ -78,19 +87,49 @@ def _deferred_section(project_root: Path, policy: Policy) -> dict[str, Any]:
     return {"count": len(items), "by_severity": by_sev, "entries": items}
 
 
+def _stale_after_s(policy: Policy) -> float:
+    timeout = float(getattr(policy.limits, "agent_timeout_s", 0) or 0)
+    return max(timeout, 3600.0)
+
+
 def _runs_section(
-    project_root: Path, run_id: str | None
+    project_root: Path,
+    run_id: str | None,
+    *,
+    stale_after_s: float,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     if run_id:
         state = load_run(project_root, run_id)
-        return _run_dict(state)
-    return [_run_dict(s) for s in list_runs(project_root)[:20]]
+        return _run_dict(project_root, state, stale_after_s=stale_after_s)
+    return [
+        _run_dict(project_root, s, stale_after_s=stale_after_s)
+        for s in list_runs(project_root)[:20]
+    ]
 
 
-def _run_dict(state: RunState) -> dict[str, Any]:
+def _run_dict(
+    project_root: Path,
+    state: RunState,
+    *,
+    stale_after_s: float,
+    now: float | None = None,
+) -> dict[str, Any]:
+    now = time.time() if now is None else now
+    age = run_age_s(state, now=now)
+    classified = classify_run(
+        project_root, state, now=now, stale_after_s=stale_after_s
+    )
+    alive = is_run_alive(project_root, state.run_id)
+    pid = lock_holder_pid(project_root, state.run_id)
     return {
         "run_id": state.run_id,
         "status": state.status,
+        "classified": classified,
+        "alive": alive,
+        "pid": pid,
+        "age_s": age,
+        "stale_by_age": bool(state.status == "running" and age >= stale_after_s),
+        "updated_at": state.updated_at,
         "mode": state.mode,
         "pause_reason": state.pause_reason,
         "pause_detail": state.pause_detail,
@@ -102,10 +141,34 @@ def _run_dict(state: RunState) -> dict[str, Any]:
     }
 
 
+def _runs_summary(runs: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "paused": 0,
+        "running": 0,
+        "stale": 0,
+        "completed": 0,
+        "aborted": 0,
+        "other": 0,
+    }
+    for r in runs:
+        label = str(r.get("classified") or r.get("status") or "other")
+        if label in counts:
+            counts[label] += 1
+        else:
+            counts["other"] += 1
+    return counts
+
+
 def collect_status(project_root: Path, *, run_id: str | None = None) -> dict[str, Any]:
     policy = load_policy(project_root, create_if_missing=True)
+    stale_after = _stale_after_s(policy)
+    runs = _runs_section(project_root, run_id, stale_after_s=stale_after)
+    summary = None
+    if isinstance(runs, list):
+        summary = _runs_summary(runs)
     return {
-        "runs": _runs_section(project_root, run_id),
+        "runs": runs,
+        "runs_summary": summary,
         "board": _board_section(project_root, policy),
         "deferred": _deferred_section(project_root, policy),
     }
@@ -113,10 +176,22 @@ def collect_status(project_root: Path, *, run_id: str | None = None) -> dict[str
 
 def format_status_human(data: dict[str, Any]) -> str:
     lines: list[str] = ["=== BMAD factory status ===", "", "## Runs"]
+    summary = data.get("runs_summary")
+    if summary:
+        bits = ", ".join(
+            f"{k}={summary[k]}"
+            for k in ("paused", "running", "stale", "completed")
+            if summary.get(k)
+        )
+        if bits:
+            lines.append(f"summary: {bits}")
     runs = data.get("runs")
     if isinstance(runs, dict):
+        classified = runs.get("classified") or runs.get("status")
+        pid = runs.get("pid")
+        pid_bit = f" pid={pid}" if classified == "running" and pid else ""
         lines.append(
-            f"{runs.get('run_id')}  {runs.get('status')}  mode={runs.get('mode')}"
+            f"{runs.get('run_id')}  {classified}{pid_bit}  mode={runs.get('mode')}"
         )
         if runs.get("pause_reason"):
             lines.append(f"  pause_reason: {runs['pause_reason']}")
@@ -138,7 +213,14 @@ def format_status_human(data: dict[str, Any]) -> str:
                 pause_ticket=r.get("pause_ticket"),
                 completed_refs=list(r.get("completed_refs") or []),
             )
-            lines.append(format_run_brief(brief))
+            lines.append(
+                format_run_brief(
+                    brief,
+                    classified=str(r.get("classified") or brief.status),
+                    alive=bool(r.get("alive")),
+                    pid=r.get("pid"),
+                )
+            )
 
     lines.extend(["", "## Board"])
     board = data.get("board") or {}
