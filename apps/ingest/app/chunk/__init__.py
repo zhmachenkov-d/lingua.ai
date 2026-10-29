@@ -1,3 +1,3 @@
-from app.chunk.split import DEFAULT_MAX_CHARS, split_paragraphs
+from app.chunk.split import DEFAULT_MAX_CHARS, DEFAULT_MIN_CHARS, split_paragraphs
 
-__all__ = ["DEFAULT_MAX_CHARS", "split_paragraphs"]
+__all__ = ["DEFAULT_MAX_CHARS", "DEFAULT_MIN_CHARS", "split_paragraphs"]

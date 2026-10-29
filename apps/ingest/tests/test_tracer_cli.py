@@ -1204,3 +1204,54 @@ def test_extract_exception_is_structure_zero_not_parse_failed(sb_dir: Path) -> N
     assert code == 1
     ready.assert_not_called()
     assert not_ready.call_args.kwargs["gate_reason"] == "structure_zero"
+
+
+def test_all_short_ocr_noise_chunks_mark_structure_zero_not_ready(
+    sb_dir: Path,
+) -> None:
+    """Hard gate can pass on many short scraps; post-split empty → NotReady."""
+    # page_count=1 → need ≥200 chars to clear mean_chars; every para is len 2.
+    short_noise = "\n\n".join(["ab"] * 120)
+    sb_spans = (UnitSpan(SB_ID, "1A", "t", 5, 5),)
+    wb_spans = (UnitSpan(WB_ID, "1A", "t", 4, 4),)
+
+    def has_ready(session: Any, textbook_id: str) -> bool:
+        del session, textbook_id
+        return False
+
+    def list_refs(session: Any, textbook_id: str) -> list[str]:
+        del session, textbook_id
+        return []
+
+    with (
+        patch(
+            "app.cli.session_factory",
+            return_value=(MagicMock(), _session_local()),
+        ),
+        patch("app.cli.ensure_corpus_schema"),
+        patch("app.cli.list_units", side_effect=_list_units_side(sb_spans, wb_spans)),
+        patch("app.cli.has_ready_unit", side_effect=has_ready),
+        patch("app.cli.list_ready_unit_refs", side_effect=list_refs),
+        patch("app.cli.upsert_not_ready_unit") as not_ready,
+        patch("app.cli.upsert_ready_unit") as ready,
+    ):
+        code = run_tracer_job(
+            textbooks=sb_dir,
+            primary=FakeAdapter(_ok_parse()),
+            fallback=FakeAdapter(_ok_parse()),
+            embedder=FakeEmbedder(),
+            extract_fn=lambda pdf, span: short_noise,
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            database_url="postgresql://u:p@localhost/db",
+        )
+    assert code == 1
+    ready.assert_not_called()
+    assert not_ready.called
+    assert all(
+        c.kwargs["gate_reason"] == "structure_zero" for c in not_ready.call_args_list
+    )
+    assert all(
+        c.kwargs["gate_metrics"].get("chunk_count") == 0
+        for c in not_ready.call_args_list
+    )
