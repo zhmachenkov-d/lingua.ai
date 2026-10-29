@@ -89,6 +89,7 @@ services:
       network: host
     environment:
       TEXTBOOKS_DIR: /textbooks
+      # Tracer co-ingests SB then WB; both PDFs must be present under textbooks/.
       INGEST_MODE: tracer
       # Same component env → in-process URL pattern as api (AD-5).
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}

@@ -20,13 +20,15 @@ from app.persist import (
     CorpusSchemaMissing,
     DatabaseConfigError,
     ensure_corpus_schema,
+    has_ready_unit,
+    list_ready_unit_refs,
     session_factory,
     smoke_select_unit,
     upsert_not_ready_unit,
     upsert_ready_unit,
     upsert_review_unit,
 )
-from app.units import EF4_BEG_SB_ID, extract_unit_text, list_units
+from app.units import EF4_BEG_SB_ID, EF4_BEG_WB_ID, extract_unit_text, list_units
 from app.units.span import UnitSpan
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,7 @@ DEFAULT_PDF_NAMES: tuple[str, ...] = (
 )
 
 SB_PDF_NAME = DEFAULT_PDF_NAMES[0]
+WB_PDF_NAME = DEFAULT_PDF_NAMES[1]
 
 ExtractFn = Callable[[Path, UnitSpan], str]
 
@@ -188,20 +191,182 @@ def _searchable_pdf_for_units(
     *,
     job_cache: Path | None,
 ) -> Path:
-    cached = getattr(primary, "last_searchable_pdf", None)
-    if isinstance(cached, Path) and cached.is_file():
-        return cached
+    """Resolve searchable PDF for unit extract — never reuse another book's OCR.
+
+    Prefer the stem-keyed job_cache candidate. Accept ``last_searchable_pdf``
+    only when its name is ``{source_pdf.stem}_ocr.pdf``; otherwise fall back
+    to ``source_pdf`` so a failed WB parse cannot inherit the SB OCR pointer.
+    """
+    expected_name = f"{source_pdf.stem}_ocr.pdf"
     if job_cache is not None:
-        candidate = job_cache / f"{source_pdf.stem}_ocr.pdf"
+        candidate = job_cache / expected_name
         if candidate.is_file():
             return candidate
+    cached = getattr(primary, "last_searchable_pdf", None)
+    if (
+        isinstance(cached, Path)
+        and cached.is_file()
+        and cached.name == expected_name
+    ):
+        return cached
     return source_pdf
+
+
+def _mint_first_ready(
+    *,
+    SessionLocal: Any,
+    pdf_path: Path,
+    textbook_id: str,
+    primary: ParseAdapter,
+    fallback: ParseAdapter,
+    embedder: Embedder,
+    extract_fn: ExtractFn,
+    job_cache: Path,
+    stdout: TextIO,
+) -> str | None:
+    """OCR → map units → gate → chunk/embed; stop after first Ready for textbook."""
+    logger.info(
+        "Tracer parsing %s (%s) via %s",
+        pdf_path.name,
+        textbook_id,
+        primary.adapter_id,
+    )
+    parse_result = parse_pdf(pdf_path, primary=primary, fallback=fallback)
+    searchable = _searchable_pdf_for_units(primary, pdf_path, job_cache=job_cache)
+    units = list_units(textbook_id)
+    ready_ref: str | None = None
+
+    with SessionLocal() as session:
+        for span in units:
+            try:
+                unit_text = extract_fn(searchable, span)
+            except Exception as exc:
+                logger.warning(
+                    "Unit extract failed for %s: %s", span.unit_ref, exc
+                )
+                unit_text = ""
+
+            gate = evaluate_hard_gate(
+                unit_text,
+                page_count=span.page_count,
+                pdf_path=pdf_path,
+                unit_pdf_path=searchable,
+                page_start=span.page_start,
+                page_end=span.page_end,
+            )
+
+            # Text-layer / failed parse is never a silent Ready path.
+            if parse_result.status != "ok":
+                metrics = dict(gate.gate_metrics)
+                metrics["parse_status"] = parse_result.status
+                upsert_not_ready_unit(
+                    session,
+                    textbook_id=span.textbook_id,
+                    unit_ref=span.unit_ref,
+                    gate_reason=parse_result.status,
+                    gate_metrics=metrics,
+                )
+                session.commit()
+                logger.info(
+                    "NotReady %s reason=%s",
+                    span.unit_ref,
+                    parse_result.status,
+                )
+                continue
+
+            if gate.disposition == "Review":
+                upsert_review_unit(
+                    session,
+                    textbook_id=span.textbook_id,
+                    unit_ref=span.unit_ref,
+                    gate_reason=gate.gate_reason or "image_area_soft",
+                    gate_metrics=gate.gate_metrics,
+                )
+                session.commit()
+                logger.info(
+                    "Review %s reason=%s",
+                    span.unit_ref,
+                    gate.gate_reason,
+                )
+                continue
+
+            if gate.disposition == "NotReady" or not gate.passed:
+                upsert_not_ready_unit(
+                    session,
+                    textbook_id=span.textbook_id,
+                    unit_ref=span.unit_ref,
+                    gate_reason=gate.gate_reason or "structure_zero",
+                    gate_metrics=gate.gate_metrics,
+                )
+                session.commit()
+                logger.info(
+                    "NotReady %s reason=%s",
+                    span.unit_ref,
+                    gate.gate_reason,
+                )
+                continue
+
+            chunks = split_paragraphs(unit_text)
+            non_empty = [c for c in chunks if c.strip()]
+            if not non_empty:
+                metrics = dict(gate.gate_metrics)
+                metrics["structure_zero"] = True
+                metrics["chunk_count"] = 0
+                upsert_not_ready_unit(
+                    session,
+                    textbook_id=span.textbook_id,
+                    unit_ref=span.unit_ref,
+                    gate_reason="structure_zero",
+                    gate_metrics=metrics,
+                )
+                session.commit()
+                continue
+
+            vectors = embedder.embed(non_empty)
+            upsert_ready_unit(
+                session,
+                textbook_id=span.textbook_id,
+                unit_ref=span.unit_ref,
+                gate_metrics=gate.gate_metrics,
+                chunk_texts=non_empty,
+                embeddings=vectors,
+                model_name=embedder.model_name,
+                dims=embedder.dims,
+            )
+            session.commit()
+            ready_ref = span.unit_ref
+            smoke = smoke_select_unit(session, ready_ref)
+            payload = {
+                "mode": "tracer",
+                "textbook_id": textbook_id,
+                "unit_ref": ready_ref,
+                "status": "Ready",
+                "gate_metrics": gate.gate_metrics,
+                "smoke": None
+                if smoke is None
+                else {
+                    "unit_ref": smoke.unit_ref,
+                    "status": smoke.status,
+                    "dims": smoke.dims,
+                    "model_name": smoke.model_name,
+                },
+            }
+            print(json.dumps(payload, ensure_ascii=False), file=stdout, flush=True)
+            logger.info(
+                "Ready %s — stopping after first Ready unit for %s",
+                ready_ref,
+                textbook_id,
+            )
+            break
+
+    return ready_ref
 
 
 def run_tracer_job(
     *,
     textbooks: Path | None = None,
     sb_pdf_name: str = SB_PDF_NAME,
+    wb_pdf_name: str = WB_PDF_NAME,
     primary: ParseAdapter | None = None,
     fallback: ParseAdapter | None = None,
     embedder: Embedder | None = None,
@@ -210,7 +375,7 @@ def run_tracer_job(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
-    """OCR SB → map units → hard gate → chunk/embed → first Ready. SB PDF only."""
+    """Require SB+WB PDFs; mint SB (or skip if Ready) then WB; both Ready required."""
     out = stdout if stdout is not None else sys.stdout
     err = stderr if stderr is not None else sys.stderr
     if textbooks is None:
@@ -224,12 +389,15 @@ def run_tracer_job(
     if embedder is None:
         embedder = BgeM3Embedder()
 
-    present, missing = resolve_required_pdfs(textbooks, (sb_pdf_name,))
+    _, missing = resolve_required_pdfs(
+        textbooks, (sb_pdf_name, wb_pdf_name)
+    )
     if missing:
         for path in missing:
             print(f"missing required PDF: {path}", file=err)
         return 1
-    pdf_path = present[0]
+    sb_path = textbooks / sb_pdf_name
+    wb_path = textbooks / wb_pdf_name
 
     # Keep a searchable OCR PDF for unit slicing (Compose sets OCR_CACHE_DIR).
     cache = _ensure_ocr_cache_dir()
@@ -257,139 +425,87 @@ def run_tracer_job(
                     print(str(exc), file=err)
                     return 1
 
-            logger.info("Tracer parsing %s via %s", pdf_path.name, primary.adapter_id)
-            parse_result = parse_pdf(pdf_path, primary=primary, fallback=fallback)
-            searchable = _searchable_pdf_for_units(primary, pdf_path, job_cache=cache)
-
-            units = list_units(EF4_BEG_SB_ID)
-            ready_ref: str | None = None
-
-            # Warm-load BGE-M3 outside the unit-write session (download/load can be slow).
+            # Warm-load BGE-M3 outside unit-write sessions (download/load can be slow).
             warm = getattr(embedder, "_load", None)
             if callable(warm):
                 warm()
 
+            skipped_sb = False
+            sb_ready_ref: str | None = None
             with SessionLocal() as session:
-                for span in units:
-                    try:
-                        unit_text = extract_fn(searchable, span)
-                    except Exception as exc:
-                        logger.warning(
-                            "Unit extract failed for %s: %s", span.unit_ref, exc
-                        )
-                        unit_text = ""
-
-                    gate = evaluate_hard_gate(
-                        unit_text,
-                        page_count=span.page_count,
-                        pdf_path=pdf_path,
-                        unit_pdf_path=searchable,
-                        page_start=span.page_start,
-                        page_end=span.page_end,
+                if has_ready_unit(session, EF4_BEG_SB_ID):
+                    skipped_sb = True
+                    refs = list_ready_unit_refs(session, EF4_BEG_SB_ID)
+                    sb_ready_ref = refs[0] if refs else None
+                    logger.info(
+                        "Skipping SB mint path; existing Ready under %s (%s)",
+                        EF4_BEG_SB_ID,
+                        sb_ready_ref,
+                    )
+                    print(
+                        json.dumps(
+                            {
+                                "mode": "tracer",
+                                "textbook_id": EF4_BEG_SB_ID,
+                                "skipped": True,
+                                "unit_ref": sb_ready_ref,
+                                "status": "Ready",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        file=out,
+                        flush=True,
                     )
 
-                    # Text-layer / failed parse is never a silent Ready path.
-                    if parse_result.status != "ok":
-                        metrics = dict(gate.gate_metrics)
-                        metrics["parse_status"] = parse_result.status
-                        upsert_not_ready_unit(
-                            session,
-                            textbook_id=span.textbook_id,
-                            unit_ref=span.unit_ref,
-                            gate_reason=parse_result.status,
-                            gate_metrics=metrics,
-                        )
-                        session.commit()
-                        logger.info(
-                            "NotReady %s reason=%s",
-                            span.unit_ref,
-                            parse_result.status,
-                        )
-                        continue
+            if not skipped_sb:
+                _mint_first_ready(
+                    SessionLocal=SessionLocal,
+                    pdf_path=sb_path,
+                    textbook_id=EF4_BEG_SB_ID,
+                    primary=primary,
+                    fallback=fallback,
+                    embedder=embedder,
+                    extract_fn=extract_fn,
+                    job_cache=cache,
+                    stdout=out,
+                )
 
-                    if gate.disposition == "Review":
-                        upsert_review_unit(
-                            session,
-                            textbook_id=span.textbook_id,
-                            unit_ref=span.unit_ref,
-                            gate_reason=gate.gate_reason or "image_area_soft",
-                            gate_metrics=gate.gate_metrics,
-                        )
-                        session.commit()
-                        logger.info(
-                            "Review %s reason=%s",
-                            span.unit_ref,
-                            gate.gate_reason,
-                        )
-                        continue
+            _mint_first_ready(
+                SessionLocal=SessionLocal,
+                pdf_path=wb_path,
+                textbook_id=EF4_BEG_WB_ID,
+                primary=primary,
+                fallback=fallback,
+                embedder=embedder,
+                extract_fn=extract_fn,
+                job_cache=cache,
+                stdout=out,
+            )
 
-                    if gate.disposition == "NotReady" or not gate.passed:
-                        upsert_not_ready_unit(
-                            session,
-                            textbook_id=span.textbook_id,
-                            unit_ref=span.unit_ref,
-                            gate_reason=gate.gate_reason or "structure_zero",
-                            gate_metrics=gate.gate_metrics,
-                        )
-                        session.commit()
-                        logger.info(
-                            "NotReady %s reason=%s",
-                            span.unit_ref,
-                            gate.gate_reason,
-                        )
-                        continue
+            with SessionLocal() as session:
+                sb_ok = has_ready_unit(session, EF4_BEG_SB_ID)
+                wb_ok = has_ready_unit(session, EF4_BEG_WB_ID)
+                sb_refs = list_ready_unit_refs(session, EF4_BEG_SB_ID)
+                wb_refs = list_ready_unit_refs(session, EF4_BEG_WB_ID)
 
-                    chunks = split_paragraphs(unit_text)
-                    non_empty = [c for c in chunks if c.strip()]
-                    if not non_empty:
-                        metrics = dict(gate.gate_metrics)
-                        metrics["structure_zero"] = True
-                        metrics["chunk_count"] = 0
-                        upsert_not_ready_unit(
-                            session,
-                            textbook_id=span.textbook_id,
-                            unit_ref=span.unit_ref,
-                            gate_reason="structure_zero",
-                            gate_metrics=metrics,
-                        )
-                        session.commit()
-                        continue
+            summary = {
+                "mode": "tracer",
+                "skipped_sb": skipped_sb,
+                "sb_ready": sb_refs,
+                "wb_ready": wb_refs,
+                # Tutor Ready DoD: SB-filtered only (WB Ready must not satisfy).
+                "tutor_ready_dod": sb_refs,
+            }
+            print(json.dumps(summary, ensure_ascii=False), file=out, flush=True)
 
-                    vectors = embedder.embed(non_empty)
-                    upsert_ready_unit(
-                        session,
-                        textbook_id=span.textbook_id,
-                        unit_ref=span.unit_ref,
-                        gate_metrics=gate.gate_metrics,
-                        chunk_texts=non_empty,
-                        embeddings=vectors,
-                        model_name=embedder.model_name,
-                        dims=embedder.dims,
-                    )
-                    session.commit()
-                    ready_ref = span.unit_ref
-                    smoke = smoke_select_unit(session, ready_ref)
-                    payload = {
-                        "mode": "tracer",
-                        "unit_ref": ready_ref,
-                        "status": "Ready",
-                        "gate_metrics": gate.gate_metrics,
-                        "smoke": None
-                        if smoke is None
-                        else {
-                            "unit_ref": smoke.unit_ref,
-                            "status": smoke.status,
-                            "dims": smoke.dims,
-                            "model_name": smoke.model_name,
-                        },
-                    }
-                    print(json.dumps(payload, ensure_ascii=False), file=out, flush=True)
-                    logger.info("Ready %s — stopping after first Ready unit", ready_ref)
-                    break
-
-            if ready_ref is None:
+            if not sb_ok or not wb_ok:
+                parts: list[str] = []
+                if not sb_ok:
+                    parts.append(f"zero Ready under {EF4_BEG_SB_ID}")
+                if not wb_ok:
+                    parts.append(f"zero Ready under {EF4_BEG_WB_ID}")
                 print(
-                    "tracer exhausted unit map with zero Ready units",
+                    "tracer finished without required Ready: " + "; ".join(parts),
                     file=err,
                 )
                 return 1

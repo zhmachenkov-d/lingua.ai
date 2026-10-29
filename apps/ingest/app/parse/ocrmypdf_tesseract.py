@@ -114,6 +114,8 @@ class OcrmypdfAdapter:
                 self.last_searchable_pdf = None
                 return self._extract(searchable, started=started)
         except Exception as exc:
+            # Do not leave a prior book's OCR pointer for a later mint path.
+            self.last_searchable_pdf = None
             wall_ms = int((time.perf_counter() - started) * 1000)
             logger.exception("OcrmypdfAdapter failed for %s", pdf_path)
             return ParseResult(

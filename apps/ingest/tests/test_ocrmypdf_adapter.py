@@ -97,3 +97,24 @@ def test_ocrmypdf_missing_binary(
     assert result.status == "parse_failed"
     assert result.error is not None
     assert "ocrmypdf" in result.error.lower()
+
+
+def test_ocrmypdf_clears_last_searchable_on_parse_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    src = tmp_path / "workbook.pdf"
+    src.write_bytes(b"%PDF")
+    prior = tmp_path / "students_book_ocr.pdf"
+    prior.write_bytes(b"%PDF-sb")
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("ocrmypdf boom")
+
+    monkeypatch.setattr("app.parse.ocrmypdf_tesseract.subprocess.run", boom)
+
+    adapter = OcrmypdfAdapter(cache_dir=tmp_path / "c")
+    adapter.last_searchable_pdf = prior
+    result = adapter.parse(src)
+
+    assert result.status == "parse_failed"
+    assert adapter.last_searchable_pdf is None
