@@ -89,10 +89,19 @@ services:
       network: host
     environment:
       TEXTBOOKS_DIR: /textbooks
+      INGEST_MODE: tracer
+      # Same component env → in-process URL pattern as api (AD-5).
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_HOST: db
       # Default CPU parse: ocrmypdf/Tesseract (Marker CPU fast is Q1 no-go).
       PARSE_PRIMARY: ocrmypdf
       OCRMYPDF_JOBS: "4"
       OCR_CACHE_DIR: /tmp/lingua-ocr-cache
+      # BGE-M3 / FlagEmbedding cache — mount ingest_hf_cache to avoid re-download.
+      HF_HOME: /models/hf
+      TRANSFORMERS_CACHE: /models/hf
       # Optional Marker path: PARSE_PRIMARY=marker plus the knobs below.
       TORCH_DEVICE: cpu
       LLAMA_CPP_BINARY: /usr/local/bin/llama-server
@@ -101,8 +110,13 @@ services:
       LLAMA_CPP_EXTRA_ARGS: "--threads 8"
     volumes:
       - ./textbooks:/textbooks:ro
+      - ingest_hf_cache:/models/hf
+    depends_on:
+      db:
+        condition: service_healthy
     command: ["python", "main.py"]
 
 volumes:
   db_data:
   web_dev_node_modules:
+  ingest_hf_cache:

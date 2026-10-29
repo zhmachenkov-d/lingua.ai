@@ -42,6 +42,7 @@ COPY apps/ingest/main.py ./
 
 # Resolve runtime deps with PyTorch CPU as primary index so torch stays CPU;
 # then install this package without re-resolving deps (avoids PyPI CUDA torch).
+# FlagEmbedding pulls transformers/sentence-transformers; install after torch CPU.
 RUN pip install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cpu \
     --extra-index-url https://pypi.org/simple \
@@ -50,7 +51,16 @@ RUN pip install --no-cache-dir \
     "marker-pdf==2.0.0" \
     "pymupdf==1.28.2" \
     "psutil==7.2.2" \
+    "sqlalchemy[asyncio]>=2,<3" \
+    "psycopg[binary]>=3.2" \
+    "pgvector>=0.4,<0.5" \
+    "FlagEmbedding==1.4.2" \
  && pip install --no-cache-dir --no-deps /packages/lingua_ids \
  && pip install --no-cache-dir --no-deps .
+
+# Hugging Face / FlagEmbedding weights cache (Compose volume optional).
+ENV HF_HOME=/models/hf \
+    TRANSFORMERS_CACHE=/models/hf \
+    INGEST_MODE=tracer
 
 CMD ["python", "main.py"]

@@ -38,7 +38,11 @@ def test_shared_textbook_ids() -> None:
 
 
 def test_api_has_no_corpus_write_path_and_ingest_has_no_alembic() -> None:
-    """AC: api does not write corpus tables; ingest has no migration runner."""
+    """AC: api does not write corpus tables; ingest has no migration runner.
+
+    Ingest may *mention* Alembic in operator-facing errors (run api / upgrade
+    head first); it must not ship an alembic env or import the alembic package.
+    """
     api_app = API_ROOT / "app"
     corpus_names = ("Textbook", "TextbookUnit", "Chunk", "Embedding")
     for path in api_app.rglob("*.py"):
@@ -55,7 +59,10 @@ def test_api_has_no_corpus_write_path_and_ingest_has_no_alembic() -> None:
     assert not (INGEST_ROOT / "alembic.ini").exists()
     ingest_app = INGEST_ROOT / "app"
     for path in ingest_app.rglob("*.py"):
-        assert "alembic" not in path.read_text(encoding="utf-8").lower(), path
+        text = path.read_text(encoding="utf-8")
+        assert not re.search(
+            r"^\s*(from|import)\s+alembic\b", text, re.M | re.I
+        ), f"ingest must not import alembic: {path.relative_to(REPO_ROOT)}"
 
 
 @pytest.mark.integration_db
