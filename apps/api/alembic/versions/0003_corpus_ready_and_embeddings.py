@@ -8,8 +8,7 @@ Schema only — no textbook seed, no Ready mint. Ingest is the sole writer.
 
 import sqlalchemy as sa
 from alembic import op
-from app.models.embedding import EMBEDDING_DIMS
-from app.models.textbook_unit import UNIT_STATUSES
+from lingua_corpus import EMBEDDING_DIMS, UNIT_STATUSES
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.dialects import postgresql as pg
 

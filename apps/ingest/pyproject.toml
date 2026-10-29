@@ -11,6 +11,7 @@ dependencies = [
   "torch",
   "torchvision",
   "lingua-ids",
+  "lingua-corpus",
   # Corpus Ready tracer (story 2.3) — pin recorded in plan Implementation Notes.
   "sqlalchemy[asyncio]>=2,<3",
   "psycopg[binary]>=3.2",
@@ -52,3 +53,4 @@ explicit = true
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
 lingua-ids = { path = "../../packages/lingua_ids" }
+lingua-corpus = { path = "../../packages/lingua_corpus" }

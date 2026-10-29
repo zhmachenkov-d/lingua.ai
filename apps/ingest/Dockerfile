@@ -36,6 +36,7 @@ RUN apt-get update \
 
 # Path dep is resolved by uv locally; Docker installs the shared package explicitly.
 COPY packages/lingua_ids /packages/lingua_ids
+COPY packages/lingua_corpus /packages/lingua_corpus
 COPY apps/ingest/pyproject.toml ./
 COPY apps/ingest/app ./app
 COPY apps/ingest/main.py ./
@@ -56,6 +57,7 @@ RUN pip install --no-cache-dir \
     "pgvector>=0.4,<0.5" \
     "FlagEmbedding==1.4.2" \
  && pip install --no-cache-dir --no-deps /packages/lingua_ids \
+ && pip install --no-cache-dir --no-deps /packages/lingua_corpus \
  && pip install --no-cache-dir --no-deps .
 
 # Hugging Face / FlagEmbedding weights cache (Compose volume optional).

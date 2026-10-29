@@ -1,7 +1,8 @@
-"""Corpus Ready + embedding schema (story 2.2)."""
+"""Corpus Ready + embedding schema (story 2.2) + shared ORM SoT (bug 33)."""
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import re
 from pathlib import Path
@@ -12,8 +13,12 @@ from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from app.db.bootstrap import bootstrap
 from app.db.config import to_sqlalchemy_url
-from app.models import Base, Textbook, TextbookUnit
+from app.models import Base, Chunk, Embedding, Textbook, TextbookUnit
 from app.models.embedding import EMBEDDING_DIMS
+from lingua_corpus import Chunk as SharedChunk
+from lingua_corpus import Embedding as SharedEmbedding
+from lingua_corpus import Textbook as SharedTextbook
+from lingua_corpus import TextbookUnit as SharedTextbookUnit
 from lingua_ids import EF4_BEG_SB_ID, EF4_BEG_WB_ID, MVP_TEXTBOOK_IDS
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
@@ -23,6 +28,12 @@ API_ROOT = REPO_ROOT / "apps" / "api"
 INGEST_ROOT = REPO_ROOT / "apps" / "ingest"
 
 CORPUS_TABLES = {"textbook", "textbook_unit", "chunk", "embedding"}
+CORPUS_CLASS_NAMES = ("Textbook", "TextbookUnit", "Chunk", "Embedding")
+# Ingest must never import the api application package (apps.api or api's app.*).
+_API_APP_IMPORT_RE = re.compile(
+    r"^\s*(?:from|import)\s+(?:apps\.api\b|app\.(?:models|corpus|db|main)\b)",
+    re.M,
+)
 
 
 @pytest.fixture
@@ -37,6 +48,43 @@ def test_shared_textbook_ids() -> None:
     assert MVP_TEXTBOOK_IDS == frozenset({EF4_BEG_SB_ID, EF4_BEG_WB_ID})
 
 
+def test_corpus_orm_is_shared_lingua_corpus_definition() -> None:
+    """AC4: both apps resolve the four corpus ORM types from lingua_corpus."""
+    assert Textbook is SharedTextbook
+    assert TextbookUnit is SharedTextbookUnit
+    assert Chunk is SharedChunk
+    assert Embedding is SharedEmbedding
+
+    persist_models = (INGEST_ROOT / "app" / "persist" / "models.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(persist_models)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name in CORPUS_CLASS_NAMES:
+            raise AssertionError(
+                "ingest persist/models.py must not define a local corpus class "
+                f"{node.name!r}; import from lingua_corpus"
+            )
+
+    # Persist sources must pull the four tables from the shared package.
+    assert re.search(
+        r"from\s+lingua_corpus\s+import\b",
+        persist_models,
+    ), "ingest persist/models.py must import corpus ORM from lingua_corpus"
+
+
+def test_ingest_does_not_import_api_application_package() -> None:
+    """AC4: ingest must not depend on the api application package."""
+    ingest_app = INGEST_ROOT / "app"
+    for path in ingest_app.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        match = _API_APP_IMPORT_RE.search(text)
+        assert match is None, (
+            f"ingest must not import api application package: "
+            f"{path.relative_to(REPO_ROOT)} ({match.group(0)!r})"
+        )
+
+
 def test_api_has_no_corpus_write_path_and_ingest_has_no_alembic() -> None:
     """AC: api does not write corpus tables; ingest has no migration runner.
 
@@ -44,12 +92,11 @@ def test_api_has_no_corpus_write_path_and_ingest_has_no_alembic() -> None:
     head first); it must not ship an alembic env or import the alembic package.
     """
     api_app = API_ROOT / "app"
-    corpus_names = ("Textbook", "TextbookUnit", "Chunk", "Embedding")
     for path in api_app.rglob("*.py"):
         if "models" in path.parts:
             continue
         text = path.read_text(encoding="utf-8")
-        if not any(name in text for name in corpus_names):
+        if not any(name in text for name in CORPUS_CLASS_NAMES):
             continue
         assert not re.search(r"session\.(add|add_all|merge|delete)", text, re.I), (
             f"corpus write path in {path.relative_to(REPO_ROOT)}"
