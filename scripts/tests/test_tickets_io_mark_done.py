@@ -13,7 +13,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from bmad_factory.agent import AgentRunResult
-from bmad_factory.constants import FactoryHalt
+from bmad_factory.constants import SHUTDOWN_ERROR, FactoryHalt
 from bmad_factory.policy import Policy
 from bmad_factory.tickets_io import (
     _tracker_mark_done,
@@ -121,7 +121,7 @@ class TrackerMarkDoneTests(unittest.TestCase):
             prompt = agent.call_args.kwargs["prompt"]
             self.assertIn("Publish the leaf if unpublished", prompt)
             self.assertIn("gh issue create", prompt)
-            gh.assert_not_called()
+            gh.assert_called_once_with(root, "99", cfg)
             self.assertEqual(find.call_count, 2)
             mirror.assert_called_once()
             set_status.assert_called_once_with(plan, "done")
@@ -174,6 +174,60 @@ class TrackerMarkDoneTests(unittest.TestCase):
             self.assertIn("store 'jira'", prompt)
             self.assertIn("acli jira workitem create", prompt)
             self.assertIn("SHOP", prompt)
+
+    def test_publish_agent_remote_close_failure_skips_mirror_and_plan_done(
+        self,
+    ) -> None:
+        """Write-verb success + tracker_id must not mark done if remote close fails."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            leaf = _leaf(root)
+            plan = _plan(root)
+            find_before = {
+                "ref": "bug-demo.md",
+                "story_file": str(leaf),
+                "title": "Demo bug",
+                "type": "bug",
+                "tracker_id": "",
+            }
+            find_after = {**find_before, "tracker_id": "99"}
+            cfg = {
+                "tickets": {"store": "github", "repo": "org/repo"},
+                "verbs": {"write": "gh issue create --title <t>"},
+            }
+            with (
+                mock.patch(
+                    "bmad_factory.tickets_io._load_store_config", return_value=cfg
+                ),
+                mock.patch(
+                    "bmad_factory.tickets_io.tickets_find",
+                    side_effect=[find_before, find_after],
+                ),
+                mock.patch(
+                    "bmad_factory.tickets_io.run_cursor_agent",
+                    return_value=_agent_ok(),
+                ),
+                mock.patch(
+                    "bmad_factory.tickets_io._github_mark_done",
+                    side_effect=FactoryHalt(SHUTDOWN_ERROR, "gh issue close failed"),
+                ),
+                mock.patch("bmad_factory.tickets_io.tickets_mirror") as mirror,
+                mock.patch("bmad_factory.tickets_io.set_plan_status") as set_status,
+                self.assertRaises(FactoryHalt) as ctx,
+            ):
+                _tracker_mark_done(
+                    root,
+                    ref="bug-demo.md",
+                    tracker_id=None,
+                    plan_path=plan,
+                    folder="backlog",
+                    policy=Policy(),
+                    model="auto",
+                    dry_run=False,
+                )
+            self.assertIn("gh issue close failed", str(ctx.exception))
+            mirror.assert_not_called()
+            set_status.assert_not_called()
 
     def test_empty_tracker_id_agent_leaves_id_empty_halts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
