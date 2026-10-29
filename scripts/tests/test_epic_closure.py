@@ -53,10 +53,24 @@ def _epic_tree(root: Path, slug: str = "epic-demo") -> tuple[Path, Path]:
         "id: 9\n"
         'tracker_id: "99"\n'
         "tracker_status: backlog\n"
+        "covers: [R4]\n"
+        "after: [epic-other]\n"
+        "sources: [_bmad-output/initiative-mvp/initiative-mvp.md]\n"
         "---\n\n# Demo\n",
     )
     (root / "_bmad-output" / "backlog").mkdir(parents=True, exist_ok=True)
     return epic_md, epic_dir
+
+
+def _frontmatter_block(text: str) -> str:
+    assert text.startswith("---\n")
+    end = text.find("\n---", 3)
+    assert end > 0
+    return text[4:end]
+
+
+def _has_block_list_line(frontmatter: str) -> bool:
+    return any(line.lstrip().startswith("- ") for line in frontmatter.splitlines())
 
 
 class ParseRetroTests(unittest.TestCase):
@@ -167,6 +181,36 @@ class CloseEpicTests(unittest.TestCase):
             self.assertEqual(fm.get("status"), "done")
             self.assertEqual(fm.get("tracker_status"), "done")
 
+    def test_preserves_inline_lists_for_tickets_py(self) -> None:
+        """Close must not rewrite covers/after into block lists tickets.py rejects."""
+        tickets_scripts = (
+            Path(__file__).resolve().parents[2] / "_bmad" / "method" / "scripts"
+        )
+        if str(tickets_scripts) not in sys.path:
+            sys.path.insert(0, str(tickets_scripts))
+        from tickets import parse_frontmatter  # type: ignore[import-not-found]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            epic_md, _ = _epic_tree(root)
+            with mock.patch(
+                "bmad_factory.epic_closure._load_store_config",
+                return_value={"tickets": {"store": "repo"}},
+            ):
+                close_epic_container(root, epic_md)
+            text = epic_md.read_text(encoding="utf-8")
+            block = _frontmatter_block(text)
+            self.assertFalse(
+                _has_block_list_line(block),
+                f"block-style list lines after close:\n{block}",
+            )
+            self.assertIn("covers: [R4]", block)
+            self.assertIn("after: [epic-other]", block)
+            fm = parse_frontmatter(text)
+            self.assertEqual(fm.get("status"), "done")
+            self.assertEqual(fm.get("covers"), ["R4"])
+            self.assertEqual(fm.get("after"), ["epic-other"])
+
     def test_github_store_closes_issue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -232,6 +276,23 @@ class MaterializeTests(unittest.TestCase):
             self.assertIn(retro_marker("epic-demo", "R1"), joined)
             self.assertIn(retro_marker("epic-demo", "R3"), joined)
             self.assertIn("refine: true", joined)
+            for text in texts:
+                block = _frontmatter_block(text)
+                self.assertNotIn(
+                    "\n...\n",
+                    f"\n{block}\n",
+                    f"yaml document-end litter in frontmatter:\n{block}",
+                )
+                self.assertTrue(
+                    any(line.startswith("title: ") for line in block.splitlines())
+                )
+                title_line = next(
+                    line for line in block.splitlines() if line.startswith("title: ")
+                )
+                self.assertTrue(
+                    title_line.startswith('title: "'),
+                    f"title should be JSON-quoted, got: {title_line!r}",
+                )
 
             created2, skipped2, errors2 = materialize_action_items(
                 root,
@@ -450,21 +511,21 @@ class CliEpicBoundaryTests(unittest.TestCase):
                         detail=detail,
                     ),
                 ),
+                self.assertRaises(FactoryHalt) as ctx,
             ):
-                with self.assertRaises(FactoryHalt) as ctx:
-                    _execute_pick_loop(
-                        project_root=root,
-                        report=report,
-                        policy=mock.Mock(),
-                        run_state=run_state,
-                        model="auto",
-                        dry_run=False,
-                        no_push=True,
-                        ticket=None,
-                        epic="epic-demo",
-                        backlog=False,
-                        cli_label="--epic epic-demo",
-                    )
+                _execute_pick_loop(
+                    project_root=root,
+                    report=report,
+                    policy=mock.Mock(),
+                    run_state=run_state,
+                    model="auto",
+                    dry_run=False,
+                    no_push=True,
+                    ticket=None,
+                    epic="epic-demo",
+                    backlog=False,
+                    cli_label="--epic epic-demo",
+                )
             self.assertEqual(ctx.exception.shutdown, HALT_EPIC_REJECTED)
             self.assertIn("Acceptance verdict", ctx.exception.detail or "")
             self.assertEqual(

@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 from .agent import agent_call_limits, run_cursor_agent, usage_dict
-from .constants import SHUTDOWN_ERROR, FactoryHalt, log
+from .constants import FactoryHalt, log
 from .pick import CLOSURE_REJECTED, EPIC_CLOSED
-from .plan_io import load_frontmatter_data, read_frontmatter
+from .plan_io import read_frontmatter, update_frontmatter_fields
 from .policy import Policy
 from .report import RunReport, UnitReport, log_cumulative_tokens
 from .run_state import RunState, append_journal, save_run
@@ -73,7 +72,12 @@ def find_epic_paths(project_root: Path, slug: str) -> tuple[Path | None, Path | 
     if epic_md is None:
         return None, None
     retro = epic_md.parent / f"{folder_name}-retrospective.md"
-    return epic_md, retro if retro.is_file() else epic_md.parent / f"{folder_name}-retrospective.md"
+    return (
+        epic_md,
+        retro
+        if retro.is_file()
+        else epic_md.parent / f"{folder_name}-retrospective.md",
+    )
 
 
 def find_backlog_dir(project_root: Path) -> Path | None:
@@ -106,7 +110,9 @@ def parse_action_items(fm: dict[str, Any]) -> list[ActionItem]:
     return out
 
 
-def parse_retro_contract(retro_md: Path) -> tuple[str | None, str | None, list[ActionItem]]:
+def parse_retro_contract(
+    retro_md: Path,
+) -> tuple[str | None, str | None, list[ActionItem]]:
     fm = read_frontmatter(retro_md)
     verdict = str(fm.get("verdict") or "").strip().lower() or None
     closure = str(fm.get("closure") or "").strip().lower() or None
@@ -121,7 +127,7 @@ def extract_section(text: str, heading: str) -> str:
     """Return markdown body under ``## {heading}`` until the next ``##``."""
     pattern = re.compile(
         rf"^##[ \t]+{re.escape(heading)}[ \t]*\n(.*?)(?=^##[ \t]+|\Z)",
-        re.M | re.S,
+        re.MULTILINE | re.DOTALL,
     )
     m = pattern.search(text)
     if not m:
@@ -172,26 +178,6 @@ def backlog_has_marker(backlog_dir: Path, marker: str) -> bool:
     return False
 
 
-def update_frontmatter_fields(path: Path, updates: dict[str, Any]) -> None:
-    text = path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        raise FactoryHalt(SHUTDOWN_ERROR, f"no frontmatter: {path}")
-    end = text.find("\n---", 3)
-    if end < 0:
-        raise FactoryHalt(SHUTDOWN_ERROR, f"frontmatter not closed: {path}")
-    block = text[3:end].strip("\n")
-    data = load_frontmatter_data(block, path=path) or {}
-    if not isinstance(data, dict):
-        raise FactoryHalt(SHUTDOWN_ERROR, f"frontmatter is not a mapping: {path}")
-    for key, value in updates.items():
-        if value is None:
-            data.pop(key, None)
-        else:
-            data[key] = value
-    new_block = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).rstrip()
-    path.write_text(f"---\n{new_block}\n---{text[end + 4 :]}", encoding="utf-8")
-
-
 def close_epic_container(
     project_root: Path,
     epic_md: Path,
@@ -211,7 +197,12 @@ def close_epic_container(
     elif tracker_id:
         updates["tracker_status"] = "done"
     update_frontmatter_fields(epic_md, updates)
-    log.info("closed epic file=%s store=%s tracker_id=%s", epic_md, store, tracker_id or "(none)")
+    log.info(
+        "closed epic file=%s store=%s tracker_id=%s",
+        epic_md,
+        store,
+        tracker_id or "(none)",
+    )
 
 
 def _bug_leaf_body(
@@ -237,7 +228,7 @@ def _bug_leaf_body(
         )
     notes_block = "\n".join(f"- {n}" for n in notes)
     desc = summary or title
-    title_yaml = yaml.safe_dump(title, allow_unicode=True).strip()
+    title_yaml = json.dumps(title, ensure_ascii=False)
     refine_line = "refine: true\n" if refine else ""
     return (
         f"---\n"
@@ -298,7 +289,9 @@ def materialize_action_items(
     errors: list[str] = []
     backlog = find_backlog_dir(project_root)
     if backlog is None:
-        ticketable = [a for a in action_items if a.disposition in TICKETABLE_DISPOSITIONS]
+        ticketable = [
+            a for a in action_items if a.disposition in TICKETABLE_DISPOSITIONS
+        ]
         if ticketable:
             errors.append(
                 f"no backlog/ under _bmad-output; cannot materialize "

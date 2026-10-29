@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from .constants import SHUTDOWN_ERROR, FactoryHalt, log
+
+_FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?", re.DOTALL)
 
 
 def load_frontmatter_data(block: str, *, path: Path) -> Any:
@@ -31,6 +34,42 @@ def read_frontmatter(path: Path) -> dict[str, Any]:
     block = text[3:end].strip("\n")
     data = load_frontmatter_data(block, path=path) or {}
     return data if isinstance(data, dict) else {}
+
+
+def set_frontmatter_value(text: str, key: str, value: str) -> str:
+    """Set or remove one frontmatter key without rewriting other lines.
+
+    Empty ``value`` removes the key. Matches tickets.py: only the ``key:`` line
+    changes, so inline lists and multi-line values for other keys stay intact.
+    """
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        raise FactoryHalt(SHUTDOWN_ERROR, "ticket has no frontmatter")
+    block = m.group(1)
+    pattern = re.compile(rf"^{re.escape(key)}:.*$\n?", re.MULTILINE)
+    if value == "":
+        block = pattern.sub("", block).rstrip("\n")
+    elif pattern.search(block):
+        block = pattern.sub(lambda _: f"{key}: {value}\n", block, count=1).rstrip("\n")
+    else:
+        block = f"{block}\n{key}: {value}"
+    return text[: m.start(1)] + block + text[m.end(1) :]
+
+
+def update_frontmatter_fields(path: Path, updates: dict[str, Any]) -> None:
+    """Surgically set frontmatter keys (string values; ``None`` removes)."""
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---"):
+        raise FactoryHalt(SHUTDOWN_ERROR, f"no frontmatter: {path}")
+    end = text.find("\n---", 3)
+    if end < 0:
+        raise FactoryHalt(SHUTDOWN_ERROR, f"frontmatter not closed: {path}")
+    for key, value in updates.items():
+        if value is None:
+            text = set_frontmatter_value(text, key, "")
+        else:
+            text = set_frontmatter_value(text, key, str(value))
+    path.write_text(text, encoding="utf-8")
 
 
 def ticket_slug_from_ref(ref: str) -> str:
@@ -166,19 +205,14 @@ def format_halt_reinvoke_steps(
 
 
 def set_plan_status(path: Path, status: str) -> None:
+    if not path.is_file():
+        raise FactoryHalt(SHUTDOWN_ERROR, f"plan has no frontmatter: {path}")
     text = path.read_text(encoding="utf-8")
     if not text.startswith("---"):
         raise FactoryHalt(SHUTDOWN_ERROR, f"plan has no frontmatter: {path}")
-    end = text.find("\n---", 3)
-    if end < 0:
+    if text.find("\n---", 3) < 0:
         raise FactoryHalt(SHUTDOWN_ERROR, f"plan frontmatter not closed: {path}")
-    block = text[3:end].strip("\n")
-    data = load_frontmatter_data(block, path=path) or {}
-    if not isinstance(data, dict):
-        raise FactoryHalt(SHUTDOWN_ERROR, f"plan frontmatter is not a mapping: {path}")
-    data["status"] = status
-    new_block = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).rstrip()
-    path.write_text(f"---\n{new_block}\n---{text[end + 4 :]}", encoding="utf-8")
+    update_frontmatter_fields(path, {"status": status})
 
 
 def initiative_dir_for(plan_path: Path, project_root: Path) -> Path:
