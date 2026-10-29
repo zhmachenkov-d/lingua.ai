@@ -1,6 +1,6 @@
 # lingua.ai — Compose stack skeleton
 
-Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sage tokens — chat surface T0–T1 only; **not** FR-15 / SM-8 complete), FastAPI `api`, Postgres+pgvector `db`, and an optional `ingest` Marker CPU spike job.
+Local modular-monolith stack: Angular `web` (Russian text-chat shell on Soft Sage tokens — chat surface T0–T1 only; **not** FR-15 / SM-8 complete), FastAPI `api`, Postgres+pgvector `db`, and an optional Compose-profile `ingest` job that mints corpus / Ready / embeddings from owner textbook PDFs.
 
 ## Prerequisites
 
@@ -32,9 +32,9 @@ Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the
 
 ### Wipe / reset (second deploy / SM-2 isolation)
 
-Use this when a second validation pass must not continue prior learner LTM/STM (FR-16 wipe scope). Wipe clears **everything in the Compose Postgres volume** `db_data`: learner LTM (`LearnerProfile` / CEFR, `VocabularyItem` + FSRS, `ReviewRecord`, `ErrorLog`), the non-authoritative `session` mirror, LangGraph checkpointer STM tables, and any future corpus/Ready rows in that DB.
+Use this when a second validation pass must not continue prior learner LTM/STM (FR-16 wipe scope). Wipe clears **everything in the Compose Postgres volume** `db_data`: learner LTM (`LearnerProfile` / CEFR, `VocabularyItem` + FSRS, `ReviewRecord`, `ErrorLog`), the non-authoritative `session` mirror, LangGraph checkpointer STM tables, and **corpus / Ready / embeddings** (`Textbook`, `TextbookUnit`, chunks, embedding rows).
 
-**Does not clear:** host `.env` / secrets, or personal textbook PDFs under gitignored `textbooks/` (remove those yourself if needed). Prefer removing **only** `db_data` — do not use bare `docker compose down -v` unless you also intend to drop other named volumes (e.g. `web_dev_node_modules`).
+**Does not clear:** host `.env` / secrets, personal textbook PDFs under gitignored `textbooks/` (remove those yourself if needed), or the named volume `ingest_hf_cache` (BGE-M3 / FlagEmbedding weights — keep it to avoid re-download; remove only if you intend a cold model cache). Prefer removing **only** `db_data` — do not use bare `docker compose down -v` unless you also intend to drop other named volumes (e.g. `web_dev_node_modules`, `ingest_hf_cache`).
 
 ```bash
 # Pick once — SAME compose file you used to start — then reuse for every step:
@@ -57,9 +57,9 @@ docker volume rm "$DB_VOL" 2>/dev/null || echo "No $DB_VOL volume (already clean
 curl -s http://127.0.0.1:8000/ready   # expect: {"status":"ok"}
 ```
 
-After wipe: re-set CEFR via `PUT /profile/cefr` (see **LearnerProfile CEFR** below for URL, body shape, and `curl` examples) before any Ready Tutor gate; re-run ingest when that pipeline exists (stub today — see Ingest job stub). Ready Tutor requires re-ingest + CEFR re-set once those features land. When Tutor gating exists, overall CEFR must be set first (empty/missing `overall` blocks Ready Tutor — FR-7).
+After wipe: re-set CEFR via `PUT /profile/cefr` (see **LearnerProfile CEFR** below for URL, body shape, and `curl` examples) before any Ready Tutor gate; re-run Compose `--profile ingest` (see **Ingest Ready corpus**) so corpus / Ready / embeddings are minted again. Ready Tutor requires re-ingest + CEFR re-set. When Tutor gating exists, overall CEFR must be set first (empty/missing `overall` blocks Ready Tutor — FR-7).
 
-Personal textbook PDFs for a second machine belong under gitignored `textbooks/` at the repo root (owner must not redistribute course PDFs). Exact ingest filenames land with the ingest epic; without PDFs, SM-2 may still proceed on non-Tutor paths when those are available.
+Personal textbook PDFs for a second machine belong under gitignored `textbooks/` at the repo root (exact filenames under **Ingest Ready corpus**; owner must not redistribute course PDFs). Without PDFs, SM-2 may still proceed on non-Tutor paths when those are available.
 
 ## Start the skeleton
 
@@ -205,15 +205,35 @@ npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 
 **CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
 
-### Ingest Marker CPU spike
+### Ingest Ready corpus
 
-Startable without `db` (Compose profile `ingest`). Mounts gitignored `textbooks/` read-only and prints one JSON metrics object per Students’ Book / Workbook PDF (`status` `ok` | `fallback` | `parse_failed`). Image ships pinned CPU `llama-server` for Marker/Surya. Missing required PDF → non-zero exit + path on stderr. Does **not** mint Ready units or write the spike note — owner HITL fills `_bmad-output/.../spike-marker-compose-cpu-spike-note.md`.
+Compose profile `ingest` (not started by default `up`). Default `INGEST_MODE=tracer` OCR-parses owner PDFs (`PARSE_PRIMARY=ocrmypdf`), hard-gates units, and upserts **corpus / Ready / embeddings** into Postgres (`depends_on: db`). Writes never touch Session, LearnerProfile, FSRS, or ErrorLog.
+
+**Place PDFs (gitignored — do not commit):**
+
+```text
+textbooks/English_File_4th_edition_Beginner_Students_book.pdf
+textbooks/English_File_4th_edition_Beginner_Workbook.pdf
+```
+
+Confirm ignore: `git check-ignore -v textbooks/*.pdf` (rule `.gitignore` → `textbooks/`). `.dockerignore` also keeps `textbooks/` out of the image build context. Owner personal copies only — do not redistribute course PDFs.
+
+**Model cache:** BGE-M3 (`BAAI/bge-m3` @ 1024) downloads into Compose volume `ingest_hf_cache` (`HF_HOME` / `TRANSFORMERS_CACHE` → `/models/hf`). First run may take a while; later runs reuse the volume. Wipe of `db_data` does **not** remove this cache.
+
+**Prerequisite:** `db` healthy and Alembic corpus schema applied. Prefer bringing `api` up so lifespan bootstrap runs `alembic upgrade head` (including corpus tables). Host-side alternate only if you set `DATABASE_URL` or all of `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` (see Secrets checklist / Compose URL notes), then `cd apps/api && uv run alembic upgrade head`.
 
 ```bash
+docker compose up -d db api
+# Wait until api bootstrap finished migrations (ingest depends_on db only):
+until curl -sf http://127.0.0.1:8000/ready; do sleep 2; done
 docker compose --profile ingest run --rm ingest
-# nested Docker:
-docker compose -f compose.dev.yaml --profile ingest run --rm ingest
+# nested Docker (classic builder — same Bake/host-network note as Start the skeleton):
+DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml up -d --build db api
+until curl -sf http://127.0.0.1:8000/ready; do sleep 2; done
+DOCKER_BUILDKIT=0 docker compose -f compose.dev.yaml --profile ingest run --rm ingest
 ```
+
+Missing required PDF → non-zero exit + path on stderr. Optional metrics-only spike mode and Marker path remain available (`INGEST_MODE=metrics`, `PARSE_PRIMARY=marker`); Marker **weights** are OpenRAIL-M (code is Apache-2.0) — free for research/personal use and startups under $5M prior-year revenue/funding caps, with competing-product restrictions; re-read before non-personal deploy: https://github.com/datalab-to/marker/blob/master/MODEL_LICENSE
 
 ## Layout
 
@@ -223,5 +243,5 @@ compose.dev.yaml   # nested-Docker host-network alternative
 apps/
   api/      # FastAPI + /health + /ready + /profile/cefr + /ws Router turns, LLM adapter, bootstrap, LTM
   web/      # Angular 22.2.x chat shell + Soft Sage tokens (T0–T1; + nginx.dev.conf for host stack)
-  ingest/   # Marker Compose CPU spike job (profile ingest)
+  ingest/   # Compose-profile ingest: OCR → gate → Ready + BGE-M3 embeddings
 ```
