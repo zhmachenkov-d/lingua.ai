@@ -3,11 +3,11 @@
 ``tickets.py`` (installed at ``_bmad/method/scripts/tickets.py``) is the v7
 ticket tree's machine interface: ``next``, ``status``, ``find`` and ``mark``
 each print one JSON object. Upstream publishes no schema version, so this
-module pins the field set bmad-loop reads: every ``parse_*`` narrows the
+module pins the field set the factory reads: every ``parse_*`` narrows the
 ``object`` the JSON decoder returned into frozen dataclasses and raises
 :class:`TicketsSchemaError` (naming the command and the field) when a pinned
 field is missing or has the wrong type. A schema error means version skew
-between bmad-loop and the installed script, never a tree problem; the tree's
+between this package and the installed script, never a tree problem; the tree's
 own problems arrive as data (``problems``) or as the script's own error
 object, which ``tickettree`` maps.
 
@@ -35,7 +35,7 @@ children) answers ``status``/``next`` with its children instead of tickets;
 child initiative at a time.
 
 ``parse_help`` and :func:`capability_problems` gate the installed script on the
-verbs and ``mark`` statuses bmad-loop drives, from its ``--help`` output (the
+verbs and ``mark`` statuses the factory drives, from its ``--help`` output (the
 argparse choice sets). :func:`requires_python_satisfied` reads the PEP 723
 ``requires-python`` header, which decides whether the running interpreter can
 launch the script directly.
@@ -79,7 +79,7 @@ NEXT_GROUPS: Final[tuple[str, ...]] = (
     "in_progress",
     "blocked",
 )
-# What bmad-loop drives: the read verbs and `mark`, and every status `mark` may
+# What the factory drives: the read verbs and `mark`, and every status `mark` may
 # write — each target of the plan transition table, so a recovery write (replan,
 # rearm, repair, rollback) never meets a status the probe let through unchecked.
 REQUIRED_VERBS: Final[frozenset[str]] = frozenset({"next", "find", "status", "mark"})
@@ -92,7 +92,7 @@ _ROW_STATUSES: Final[frozenset[str]] = frozenset(("", *PLAN_STATUSES))
 
 class TicketsSchemaError(ValueError):
     """A ``tickets.py`` document lacks a pinned field or mistypes it: the
-    installed script and this bmad-loop disagree on the contract."""
+    installed script and this package disagree on the contract."""
 
     def __init__(self, command: str, field: str, detail: str) -> None:
         super().__init__(f"tickets.py {command}: {field}: {detail}")
@@ -280,7 +280,9 @@ class Capability:
 
 def _obj(doc: object, command: str, where: str) -> Mapping[str, object]:
     if not isinstance(doc, dict):
-        raise TicketsSchemaError(command, where, f"expected an object, got {type(doc).__name__}")
+        raise TicketsSchemaError(
+            command, where, f"expected an object, got {type(doc).__name__}"
+        )
     out: dict[str, object] = {}
     for key, value in doc.items():  # pyright: ignore[reportUnknownVariableType]
         if not isinstance(key, str):
@@ -295,7 +297,9 @@ def _need(d: Mapping[str, object], command: str, field: str) -> object:
     return d[field]
 
 
-def _str(d: Mapping[str, object], command: str, field: str, *, default: str | None = None) -> str:
+def _str(
+    d: Mapping[str, object], command: str, field: str, *, default: str | None = None
+) -> str:
     value = d.get(field, default) if default is not None else _need(d, command, field)
     if not isinstance(value, str):
         raise TicketsSchemaError(command, field, f"expected text, got {value!r}")
@@ -305,7 +309,9 @@ def _str(d: Mapping[str, object], command: str, field: str, *, default: str | No
 def _opt_str(d: Mapping[str, object], command: str, field: str) -> str | None:
     value = _need(d, command, field)
     if value is not None and not isinstance(value, str):
-        raise TicketsSchemaError(command, field, f"expected text or null, got {value!r}")
+        raise TicketsSchemaError(
+            command, field, f"expected text or null, got {value!r}"
+        )
     return value
 
 
@@ -329,7 +335,9 @@ def _flag(d: Mapping[str, object], command: str, field: str) -> bool:
     if field not in d:
         return False
     if d[field] is not True:
-        raise TicketsSchemaError(command, field, f"expected true when present, got {d[field]!r}")
+        raise TicketsSchemaError(
+            command, field, f"expected true when present, got {d[field]!r}"
+        )
     return True
 
 
@@ -340,7 +348,9 @@ def _scalar_text(value: object, command: str, field: str) -> str:
         return value
     if isinstance(value, int) and not isinstance(value, bool):
         return str(value)
-    raise TicketsSchemaError(command, field, f"expected text or an integer, got {value!r}")
+    raise TicketsSchemaError(
+        command, field, f"expected text or an integer, got {value!r}"
+    )
 
 
 def _opt_id(d: Mapping[str, object], command: str, field: str) -> str | None:
@@ -354,26 +364,34 @@ def _list(value: object, command: str, field: str) -> list[object]:
     return list(value)  # pyright: ignore[reportUnknownArgumentType]
 
 
-def _ids(d: Mapping[str, object], command: str, field: str, *, required: bool) -> tuple[str, ...]:
+def _ids(
+    d: Mapping[str, object], command: str, field: str, *, required: bool
+) -> tuple[str, ...]:
     if not required and field not in d:
         return ()
     items = _list(_need(d, command, field), command, field)
     return tuple(_scalar_text(v, command, field) for v in items)
 
 
-def _texts(d: Mapping[str, object], command: str, field: str, *, required: bool) -> tuple[str, ...]:
+def _texts(
+    d: Mapping[str, object], command: str, field: str, *, required: bool
+) -> tuple[str, ...]:
     if not required and field not in d:
         return ()
     items = _list(_need(d, command, field), command, field)
     out: list[str] = []
     for v in items:
         if not isinstance(v, str):
-            raise TicketsSchemaError(command, field, f"expected text entries, got {v!r}")
+            raise TicketsSchemaError(
+                command, field, f"expected text entries, got {v!r}"
+            )
         out.append(v)
     return tuple(out)
 
 
-def _objects(d: Mapping[str, object], command: str, field: str) -> tuple[Mapping[str, object], ...]:
+def _objects(
+    d: Mapping[str, object], command: str, field: str
+) -> tuple[Mapping[str, object], ...]:
     if field not in d:
         return ()
     items = _list(d[field], command, field)
@@ -424,7 +442,9 @@ def _row(doc: object, command: str) -> TicketRow:
 
 
 def _rows(d: Mapping[str, object], command: str, field: str) -> tuple[TicketRow, ...]:
-    return tuple(_row(v, command) for v in _list(_need(d, command, field), command, field))
+    return tuple(
+        _row(v, command) for v in _list(_need(d, command, field), command, field)
+    )
 
 
 def _backlog_error(d: Mapping[str, object], command: str) -> str | None:
@@ -508,7 +528,9 @@ def _epic(doc: object, command: str) -> EpicRow:
         )
     refined = d.get("refined", True)
     if not isinstance(refined, bool):
-        raise TicketsSchemaError(command, "refined", f"expected true/false, got {refined!r}")
+        raise TicketsSchemaError(
+            command, "refined", f"expected true/false, got {refined!r}"
+        )
     return EpicRow(
         slug=slug,
         id=epic_id,
@@ -554,7 +576,9 @@ def parse_status(doc: object, *, store: str | None = None) -> StatusView:
         counts=_counts(d, command),
         epics=epics,
         next_id=_int(d, command, "next_id") if "next_id" in d else None,
-        longest_remaining_chain=_ids(d, command, "longest_remaining_chain", required=False),
+        longest_remaining_chain=_ids(
+            d, command, "longest_remaining_chain", required=False
+        ),
         problems=_texts(d, command, "problems", required=False),
         backlog=backlog,
         backlog_error=backlog_error,
@@ -589,7 +613,9 @@ def parse_mark(doc: object) -> MarkReport:
         status=_str(d, command, "status"),
         assignee=_scalar_text(_need(d, command, "assignee"), command, "assignee"),
         blocked_at=_scalar_text(_need(d, command, "blocked_at"), command, "blocked_at"),
-        blocked_reason=_scalar_text(_need(d, command, "blocked_reason"), command, "blocked_reason"),
+        blocked_reason=_scalar_text(
+            _need(d, command, "blocked_reason"), command, "blocked_reason"
+        ),
     )
 
 
@@ -599,9 +625,11 @@ def parse_mark(doc: object) -> MarkReport:
 # commas and hyphens only, so a docstring's `{project-root}`-style placeholder
 # outside the usage block can never be mistaken for one.
 _CHOICES_RE: Final = re.compile(r"\{([a-z][a-z,-]*)\}")
-_PEP723_BLOCK_RE: Final = re.compile(r"^# /// script\s*$(.*?)^# ///\s*$", re.M | re.S)
+_PEP723_BLOCK_RE: Final = re.compile(
+    r"^# /// script\s*$(.*?)^# ///\s*$", re.MULTILINE | re.DOTALL
+)
 _REQUIRES_PYTHON_RE: Final = re.compile(
-    r"""^#\s*requires-python\s*=\s*["']([^"']*)["']\s*$""", re.M
+    r"""^#\s*requires-python\s*=\s*["']([^"']*)["']\s*$""", re.MULTILINE
 )
 _GE_RE: Final = re.compile(r"^\s*>=\s*(\d+)\.(\d+)(?:\.(\d+))?\s*$")
 
@@ -626,7 +654,9 @@ def parse_requires_python(script_text: str) -> str | None:
     return None if hit is None else hit.group(1)
 
 
-def parse_help(top_help: str, mark_help: str, *, requires_python: str | None = None) -> Capability:
+def parse_help(
+    top_help: str, mark_help: str, *, requires_python: str | None = None
+) -> Capability:
     """The script's verbs (from ``tickets.py --help``) and ``mark`` statuses
     (from ``tickets.py mark --help``)."""
     return Capability(
@@ -637,9 +667,11 @@ def parse_help(top_help: str, mark_help: str, *, requires_python: str | None = N
 
 
 def capability_problems(cap: Capability) -> list[str]:
-    """One line per verb or ``mark`` status bmad-loop needs and the installed
+    """One line per verb or ``mark`` status the factory needs and the installed
     script lacks; empty when the script can drive a tickets run."""
-    problems = [f"tickets.py has no `{v}` command" for v in sorted(REQUIRED_VERBS - cap.verbs)]
+    problems = [
+        f"tickets.py has no `{v}` command" for v in sorted(REQUIRED_VERBS - cap.verbs)
+    ]
     problems += [
         f"tickets.py mark does not accept status `{s}`"
         for s in sorted(REQUIRED_STATUSES - cap.statuses)
@@ -647,7 +679,9 @@ def capability_problems(cap: Capability) -> list[str]:
     return problems
 
 
-def requires_python_satisfied(spec: str | None, version: tuple[int, int, int]) -> bool | None:
+def requires_python_satisfied(
+    spec: str | None, version: tuple[int, int, int]
+) -> bool | None:
     """Whether ``version`` (major, minor, micro) satisfies ``spec``. Only a single
     ``>=X.Y`` or ``>=X.Y.Z`` is understood (a missing micro reads as 0); any other
     specifier, or none, answers None — the caller then launches through ``uv``,

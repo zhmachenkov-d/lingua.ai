@@ -84,11 +84,7 @@ def find_initiative_ledgers(
     found: list[Path] = []
     for path in project_root.rglob(ledger_name):
         parts = set(path.parts)
-        if (
-            POLICY_DIRNAME in parts
-            or "_bmad-output" in parts
-            or ".bmad-orchestrate" in parts
-        ):
+        if POLICY_DIRNAME in parts or "_bmad-output" in parts:
             continue
         if path.is_file():
             found.append(path)
@@ -457,9 +453,7 @@ def _filter_remaining_bundles(
         if synthetic in completed_refs:
             continue
         if only_filters:
-            hay = " ".join(
-                [bundle.title, bundle.intent, *bundle.entry_keys]
-            ).lower()
+            hay = " ".join([bundle.title, bundle.intent, *bundle.entry_keys]).lower()
             if not any(f in hay for f in only_filters):
                 continue
         remaining.append(bundle)
@@ -507,9 +501,7 @@ def _execute_deferred_bundles(
                     intent=matching.intent,
                 )
             except FactoryHalt as halt:
-                _handle_bundle_halt(
-                    project_root, run_state, halt, title=matching.title
-                )
+                _handle_bundle_halt(project_root, run_state, halt, title=matching.title)
             for key in matching.entry_keys:
                 path = ledger_by_key.get(key)
                 if path:
@@ -557,9 +549,7 @@ def _handle_bundle_halt(
 ) -> None:
     """Skip blocked bundles; pause + re-raise on dirty_tree / fatal error."""
     if halt.shutdown == "blocked":
-        log.warning(
-            "deferred bundle blocked title=%s detail=%s", title, halt.detail
-        )
+        log.warning("deferred bundle blocked title=%s detail=%s", title, halt.detail)
         append_journal(
             project_root,
             run_state.run_id,
