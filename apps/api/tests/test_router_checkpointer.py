@@ -71,6 +71,55 @@ def test_channel_versions_monotonic_across_turns(migrated_url: str) -> None:
         assert second[key] > first[key]
 
 
+def _version_prefix(version: object) -> int:
+    return int(str(version).split(".", 1)[0])
+
+
+async def _all_channel_version_prefixes(database_url: str, key: str) -> list[int]:
+    config = {"configurable": {"thread_id": THREAD_ID, "checkpoint_ns": ""}}
+    prefixes: list[int] = []
+    async with open_checkpointer(database_url) as saver:
+        async for item in saver.alist(config):  # type: ignore[arg-type]
+            versions = item.checkpoint.get("channel_versions")
+            assert isinstance(versions, dict)
+            prefixes.append(_version_prefix(versions[key]))
+    return prefixes
+
+
+@pytest.mark.integration_db
+def test_overlapping_writers_do_not_duplicate_channel_versions(
+    migrated_url: str,
+) -> None:
+    """Advisory lock serializes aget→aput; delay would collide without the lock."""
+
+    async def delay_after_aget() -> None:
+        await asyncio.sleep(0.05)
+
+    async def race() -> None:
+        with patch(
+            "app.router.turn._after_snapshot_aget",
+            new=delay_after_aget,
+        ):
+            await asyncio.gather(
+                write_turn_snapshot(
+                    last_user_text="writer-a", database_url=migrated_url
+                ),
+                write_turn_snapshot(
+                    last_user_text="writer-b", database_url=migrated_url
+                ),
+            )
+
+    asyncio.run(race())
+    prefixes = asyncio.run(
+        _all_channel_version_prefixes(migrated_url, "last_user_text")
+    )
+    assert len(prefixes) == 2
+    assert len(set(prefixes)) == 2
+    assert max(prefixes) == 2
+    tip = asyncio.run(_channel_versions(migrated_url))
+    assert _version_prefix(tip["last_user_text"]) == 2
+
+
 @pytest.mark.integration_db
 def test_channel_versions_advance_from_legacy_plain_one(
     migrated_url: str,
@@ -243,6 +292,11 @@ def test_handle_turn_llm_error_skips_snapshot() -> None:
     assert result.code == "llm_unavailable"
 
 
+@asynccontextmanager
+async def _noop_snapshot_write_lock(_database_url: str | None = None):
+    yield
+
+
 def _hung_checkpointer_open():
     """Async context manager yielding a saver whose ``aput`` never completes."""
 
@@ -265,6 +319,7 @@ def _hung_checkpointer_open():
 
 def test_write_turn_snapshot_times_out_on_hung_aput() -> None:
     with (
+        patch("app.router.turn._snapshot_write_lock", _noop_snapshot_write_lock),
         patch("app.router.turn.open_checkpointer", _hung_checkpointer_open()),
         patch("app.router.turn.CHECKPOINTER_WRITE_TIMEOUT_SECONDS", 0.05),
     ):
@@ -274,6 +329,7 @@ def test_write_turn_snapshot_times_out_on_hung_aput() -> None:
 
 def test_handle_turn_maps_snapshot_timeout_to_checkpointer_write_failed() -> None:
     with (
+        patch("app.router.turn._snapshot_write_lock", _noop_snapshot_write_lock),
         patch("app.router.turn.open_checkpointer", _hung_checkpointer_open()),
         patch("app.router.turn.CHECKPOINTER_WRITE_TIMEOUT_SECONDS", 0.05),
     ):
@@ -304,6 +360,7 @@ def _ok_checkpointer_open():
 def test_write_turn_snapshot_succeeds_when_mirror_fails() -> None:
     fake_open, saver = _ok_checkpointer_open()
     with (
+        patch("app.router.turn._snapshot_write_lock", _noop_snapshot_write_lock),
         patch("app.router.turn.open_checkpointer", fake_open),
         patch(
             "app.router.turn.upsert_session_mirror",
@@ -321,6 +378,7 @@ def test_write_turn_snapshot_succeeds_when_mirror_fails() -> None:
 def test_handle_turn_succeeds_when_mirror_fails() -> None:
     fake_open, saver = _ok_checkpointer_open()
     with (
+        patch("app.router.turn._snapshot_write_lock", _noop_snapshot_write_lock),
         patch("app.router.turn.open_checkpointer", fake_open),
         patch(
             "app.router.turn.upsert_session_mirror",
