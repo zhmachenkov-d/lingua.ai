@@ -392,6 +392,10 @@ def _tracker_publish_and_done(
             SHUTDOWN_ERROR,
             f"store is {store}: cannot mark done without tracker_id for {ref}",
         )
+    # Agent success + tracker_id alone is not enough: verify remote closed/done
+    # before local mirror (matches existing-id github path via _github_mark_done).
+    if store == "github":
+        _github_mark_done(project_root, tid, cfg)
     tickets_mirror(
         project_root,
         [{"ref": ref, "tracker_id": tid, "tracker_status": "done"}],
