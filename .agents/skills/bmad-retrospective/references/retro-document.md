@@ -20,13 +20,13 @@ action_items:
   - id: R2026-1
     kind: remediation | spec-reconciliation | process
     disposition: fix-now | defer | accept-as-is
-    title: Short title
+    title: "Short title"
     owner: role or name
-    summary: One paragraph with source refs
+    summary: "One paragraph with source refs. Source: path/to/file.py"
 ---
 ```
 
-`epic` is the folder's name, as `tickets.py` spells the epic. Keep `verdict` in sync with the Acceptance verdict section below. Set `closure: recommended` when `verdict` is `accepted` or `accepted-with-open-items`, and `closure: refused` when `verdict` is `rejected`. Every routed Action items section entry must appear in `action_items` with a stable `id` (unique within the epic). This frontmatter is the machine-readable contract; nothing else in the tree records the verdict, so a gate or orchestrator that acts on it **must** read this file.
+`epic` is the folder's name, as `tickets.py` spells the epic. Keep `verdict` in sync with the Acceptance verdict section below. Set `closure: recommended` when `verdict` is `accepted` or `accepted-with-open-items`, and `closure: refused` when `verdict` is `rejected`. Every routed Action items section entry must appear in `action_items` with a stable `id` (unique within the epic). Quote free-text fields (`title`, `summary`) as YAML double-quoted scalars whenever they contain `:`, `#`, or other YAML-special characters — unquoted `Source: path` breaks `yaml.safe_load` and blocks epic closure. This frontmatter is the machine-readable contract; nothing else in the tree records the verdict, so a gate or orchestrator that acts on it **must** read this file.
 
 Sections:
 

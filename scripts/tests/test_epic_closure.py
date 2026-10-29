@@ -108,6 +108,50 @@ class ParseRetroTests(unittest.TestCase):
             self.assertEqual(closure, "refused")
             self.assertEqual(items, [])
 
+    def test_quoted_summary_with_colon_parses(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            retro = _write(
+                Path(tmp) / "r.md",
+                "---\n"
+                "verdict: accepted-with-open-items\n"
+                "closure: recommended\n"
+                "action_items:\n"
+                "  - id: R1\n"
+                "    kind: remediation\n"
+                "    disposition: defer\n"
+                '    title: "Filter noise"\n'
+                "    owner: ingest\n"
+                '    summary: "No min-length. Source: live db; apps/ingest/app/chunk/split.py"\n'
+                "---\n\n"
+                "## Acceptance verdict\n\naccepted-with-open-items.\n",
+            )
+            verdict, closure, items = parse_retro_contract(retro)
+            self.assertEqual(verdict, "accepted-with-open-items")
+            self.assertEqual(closure, "recommended")
+            self.assertEqual(len(items), 1)
+            self.assertEqual(items[0].id, "R1")
+            self.assertIn("Source: live db", items[0].summary)
+
+    def test_unquoted_summary_with_colon_raises_factory_halt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            retro = _write(
+                Path(tmp) / "r.md",
+                "---\n"
+                "verdict: accepted\n"
+                "action_items:\n"
+                "  - id: R1\n"
+                "    kind: remediation\n"
+                "    disposition: defer\n"
+                "    title: Filter noise\n"
+                "    summary: No min-length. Source: live db; apps/ingest/app/chunk/split.py\n"
+                "---\n\n"
+                "## Acceptance verdict\n\naccepted.\n",
+            )
+            with self.assertRaises(FactoryHalt) as ctx:
+                parse_retro_contract(retro)
+            self.assertIn("invalid YAML frontmatter", str(ctx.exception))
+            self.assertIn(str(retro), str(ctx.exception))
+
 
 class CloseEpicTests(unittest.TestCase):
     def test_sets_status_done(self) -> None:
