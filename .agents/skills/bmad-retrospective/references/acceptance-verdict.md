@@ -6,17 +6,19 @@ Phase 4. Turn the consolidated findings into two outputs: routed action items th
 
 Give every finding two independent dispositions:
 
-- **What to do about this instance** — *fix now*, *defer*, or *accept as-is*. Fix-now findings become action items. Deferred findings carry enough context to be acted on later without re-investigation. Accepted deviations are recorded so later retros stop re-flagging them.
+- **What to do about this instance** — _fix now_, _defer_, or _accept as-is_. Fix-now findings become action items. Deferred findings carry enough context to be acted on later without re-investigation. Accepted deviations are recorded so later retros stop re-flagging them.
 - **What would prevent the next one** — the upstream lesson: spec wording, story sizing, a missing convention or gate, or nothing. This is where a recurring finding becomes a process change rather than a one-off fix.
 
 Findings from sub-agents or the team discussion are unverified reports, not established facts. Before an action item relies on one, re-check it against the primary source — reopen the file, the commit, the ticket. A finding whose source does not hold up is dropped, not routed.
 
 ## Action items
 
-Compile fix-now findings and process lessons into specific, owned action items. Each names what to change and who owns it. Two kinds are *proposed, not applied* in this version:
+Compile fix-now findings and process lessons into specific, owned action items. Each names what to change and who owns it. Mirror every item into the retrospective frontmatter `action_items` list (`id`, `kind`, `disposition`, `title`, `owner`, `summary`) so `bmad_factory` can materialize backlog tickets after an accepting close. Two kinds are _proposed here, not applied by this skill_:
 
-- **Remediation** — code fixes are written up as action items (or story-shaped work) for the normal dev loop to execute later. The retrospective does not run the dev loop itself.
-- **Spec reconciliation** — where the as-built diverges from the ticket, propose the reconciliation as an action item with the evidence attached. The human applies it to the ticket through `bmad-agent-po`; an uncertain interpretation is never written into a ticket automatically.
+- **Remediation** (`kind: remediation`) — code fixes written up for the normal dev loop; the retrospective does not run the loop itself.
+- **Spec reconciliation** (`kind: spec-reconciliation`) — where the as-built diverges from the ticket, propose the reconciliation with evidence; an uncertain interpretation is never written into an existing story/plan by this skill or the factory. Process lessons use `kind: process`.
+
+Dispositions: `fix-now` and `defer` are ticketable; `accept-as-is` is recorded only.
 
 ## Decision records
 

@@ -141,13 +141,15 @@ def format_halt_reinvoke_steps(
     lines = [
         "Next steps:",
         f"1. {detail}",
-        "2. Act on the gate (refine / approve / close epic / fix blocked), then re-invoke:",
+        "2. Act on the gate (refine / approve plan / remediate rejected epic / "
+        "fix blocked), then re-invoke:",
         f"   uv run scripts/bmad_factory.py --verbose --model={model} {cli_args}",
     ]
     if resume_bit:
         lines.append(resume_bit)
     lines.append(
-        "   (use -y to ack plan-checkpoint / epic-closure when appropriate)"
+        "   (use -y to ack plan-checkpoint, or to force-ack an epic-boundary "
+        "after a refused retrospective when you intentionally proceed)"
     )
     if stop_bit:
         lines.append(stop_bit)
