@@ -18,6 +18,7 @@ from app.parse.result import ParseResult
 from app.persist import CorpusSchemaMissing, DatabaseConfigError
 from app.persist.store import SmokeRow
 from app.units.span import UnitSpan
+from lingua_ids import EMBEDDING_DIMS, EMBEDDING_MODEL_NAME
 
 SB_ID = "ef4-beg-sb"
 WB_ID = "ef4-beg-wb"
@@ -39,11 +40,11 @@ class FakeAdapter:
 
 
 class FakeEmbedder:
-    model_name = "BAAI/bge-m3"
-    dims = 1024
+    model_name = EMBEDDING_MODEL_NAME
+    dims = EMBEDDING_DIMS
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        return [[0.01 * (i + 1)] * 1024 for i, _ in enumerate(texts)]
+        return [[0.01 * (i + 1)] * EMBEDDING_DIMS for i, _ in enumerate(texts)]
 
 
 def _ok_parse() -> ParseResult:
@@ -258,7 +259,7 @@ def test_tracer_wb_extract_ignores_stale_sb_searchable(
         patch(
             "app.cli.smoke_select_unit",
             side_effect=lambda s, ref: SmokeRow(
-                unit_ref=ref, status="Ready", dims=1024, model_name="BAAI/bge-m3"
+                unit_ref=ref, status="Ready", dims=EMBEDDING_DIMS, model_name=EMBEDDING_MODEL_NAME
             ),
         ),
     ):
@@ -362,8 +363,8 @@ def test_happy_path_sb_and_wb_ready_and_smoke(sb_dir: Path) -> None:
         return SmokeRow(
             unit_ref=unit_ref,
             status="Ready",
-            dims=1024,
-            model_name="BAAI/bge-m3",
+            dims=EMBEDDING_DIMS,
+            model_name=EMBEDDING_MODEL_NAME,
         )
 
     with (
@@ -444,8 +445,8 @@ def test_skip_sb_when_ready_still_runs_wb(sb_dir: Path) -> None:
             return_value=SmokeRow(
                 unit_ref=f"{WB_ID}/1A",
                 status="Ready",
-                dims=1024,
-                model_name="BAAI/bge-m3",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
             ),
         ),
     ):
@@ -568,8 +569,8 @@ def test_tutor_dod_helper_ignores_wb_only_ready(sb_dir: Path) -> None:
             return_value=SmokeRow(
                 unit_ref=f"{SB_ID}/1A",
                 status="Ready",
-                dims=1024,
-                model_name="BAAI/bge-m3",
+                dims=EMBEDDING_DIMS,
+                model_name=EMBEDDING_MODEL_NAME,
             ),
         ),
     ):
@@ -654,7 +655,7 @@ def test_soft_review_then_ready_never_embeds_review(sb_dir: Path) -> None:
         patch(
             "app.cli.smoke_select_unit",
             side_effect=lambda s, ref: SmokeRow(
-                unit_ref=ref, status="Ready", dims=1024, model_name="BAAI/bge-m3"
+                unit_ref=ref, status="Ready", dims=EMBEDDING_DIMS, model_name=EMBEDDING_MODEL_NAME
             ),
         ),
     ):
@@ -757,7 +758,7 @@ def test_wb_soft_review_continues_to_wb_ready(sb_dir: Path) -> None:
         patch(
             "app.cli.smoke_select_unit",
             side_effect=lambda s, ref: SmokeRow(
-                unit_ref=ref, status="Ready", dims=1024, model_name="BAAI/bge-m3"
+                unit_ref=ref, status="Ready", dims=EMBEDDING_DIMS, model_name=EMBEDDING_MODEL_NAME
             ),
         ),
     ):
@@ -859,8 +860,8 @@ def test_threshold_env_flips_disposition_without_code_edits(
                 side_effect=lambda s, ref: SmokeRow(
                     unit_ref=ref,
                     status="Ready",
-                    dims=1024,
-                    model_name="BAAI/bge-m3",
+                    dims=EMBEDDING_DIMS,
+                    model_name=EMBEDDING_MODEL_NAME,
                 ),
             ),
         ):
@@ -948,7 +949,7 @@ def test_hard_gate_fail_then_ready(sb_dir: Path) -> None:
         patch(
             "app.cli.smoke_select_unit",
             side_effect=lambda s, ref: SmokeRow(
-                unit_ref=ref, status="Ready", dims=1024, model_name="BAAI/bge-m3"
+                unit_ref=ref, status="Ready", dims=EMBEDDING_DIMS, model_name=EMBEDDING_MODEL_NAME
             ),
         ),
     ):

@@ -19,6 +19,7 @@ from app.persist.store import (
     upsert_review_unit,
     upsert_textbook,
 )
+from lingua_ids import EMBEDDING_DIMS, EMBEDDING_MODEL_NAME
 
 
 def test_to_sqlalchemy_url() -> None:
@@ -133,9 +134,9 @@ def test_upsert_not_ready_and_ready_paths() -> None:
             unit_ref="ef4-beg-sb/1A",
             gate_metrics={"mean_chars_per_page": 500.0},
             chunk_texts=["hello"],
-            embeddings=[[0.1] * 1024],
-            model_name="BAAI/bge-m3",
-            dims=1024,
+            embeddings=[[0.1] * EMBEDDING_DIMS],
+            model_name=EMBEDDING_MODEL_NAME,
+            dims=EMBEDDING_DIMS,
         )
         assert ready.status == "Ready"
         assert ready.gate_reason is None
@@ -225,8 +226,8 @@ def test_upsert_ready_requires_chunks() -> None:
                 gate_metrics={},
                 chunk_texts=[],
                 embeddings=[],
-                model_name="BAAI/bge-m3",
-                dims=1024,
+                model_name=EMBEDDING_MODEL_NAME,
+                dims=EMBEDDING_DIMS,
             )
 
 
