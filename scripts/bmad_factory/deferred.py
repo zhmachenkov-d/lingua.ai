@@ -257,25 +257,92 @@ def parse_triage_response(text: str, known_keys: set[str]) -> SweepTriage:
     return triage
 
 
-def _prompt_decisions(triage: SweepTriage) -> SweepTriage:
+def triage_to_dict(triage: SweepTriage) -> dict[str, Any]:
+    return {
+        "resolved": list(triage.resolved_keys),
+        "skip": list(triage.skip_keys),
+        "blocked": list(triage.blocked_keys),
+        "bundles": [
+            {
+                "title": b.title,
+                "intent": b.intent,
+                "entry_keys": list(b.entry_keys),
+                "needs_decision": bool(b.needs_decision),
+                "decision_prompt": b.decision_prompt,
+            }
+            for b in triage.bundles
+        ],
+        "decisions": list(triage.decisions),
+    }
+
+
+def save_triage(triage_path: Path, triage: SweepTriage) -> None:
+    """Persist triage so resume does not re-ask answered decisions."""
+    triage_path.parent.mkdir(parents=True, exist_ok=True)
+    triage_path.write_text(
+        json.dumps(triage_to_dict(triage), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _prompt_decisions(
+    triage: SweepTriage, *, triage_path: Path | None = None
+) -> SweepTriage:
+    """Ask for needs_decision bundles; persist each answer to triage.json.
+
+    ``y`` keeps the bundle with ``needs_decision=false``. ``n`` / EOF drops it
+    from the build queue (entry keys appended to ``skip``) so a later resume
+    does not re-prompt. Ctrl+C persists progress then re-raises.
+    """
     kept: list[SweepBundle] = []
-    for bundle in triage.bundles:
-        if not bundle.needs_decision:
-            kept.append(bundle)
-            continue
-        question = bundle.decision_prompt or bundle.title
-        if not sys.stdin.isatty():
-            log.warning("skip decision bundle (no TTY): %s", bundle.title)
-            continue
-        try:
-            answer = input(f"Deferred decision for [{bundle.title}]: {question} [y/N] ")
-        except EOFError:
-            answer = "n"
-        if answer.strip().lower() in {"y", "yes"}:
-            bundle.needs_decision = False
-            kept.append(bundle)
-        else:
-            log.info("operator skipped bundle=%s", bundle.title)
+    remaining = list(triage.bundles)
+
+    def _persist(rest: list[SweepBundle]) -> None:
+        if triage_path is None:
+            return
+        triage.bundles = kept + rest
+        save_triage(triage_path, triage)
+
+    try:
+        while remaining:
+            bundle = remaining.pop(0)
+            if not bundle.needs_decision:
+                kept.append(bundle)
+                continue
+            question = bundle.decision_prompt or bundle.title
+            if not sys.stdin.isatty():
+                log.warning("skip decision bundle (no TTY): %s", bundle.title)
+                # Leave unresolved for a future attended resume.
+                remaining.insert(0, bundle)
+                break
+            try:
+                answer = input(
+                    f"Deferred decision for [{bundle.title}]: {question} [y/N] "
+                )
+            except EOFError:
+                answer = "n"
+            except KeyboardInterrupt:
+                remaining.insert(0, bundle)
+                _persist(remaining)
+                raise
+            if answer.strip().lower() in {"y", "yes"}:
+                bundle.needs_decision = False
+                kept.append(bundle)
+                log.info("operator approved bundle=%s", bundle.title)
+            else:
+                for key in bundle.entry_keys:
+                    if key not in triage.skip_keys:
+                        triage.skip_keys.append(key)
+                log.info("operator skipped bundle=%s", bundle.title)
+            _persist(remaining)
+    except KeyboardInterrupt:
+        _persist(remaining)
+        raise
+
+    # File keeps unanswered needs_decision bundles; this run only executes kept.
+    if triage_path is not None:
+        triage.bundles = kept + remaining
+        save_triage(triage_path, triage)
     triage.bundles = kept
     return triage
 
@@ -648,8 +715,10 @@ def continue_deferred(
                 close_ledger_entries(path, {key})
 
         if not no_prompt and policy.sweep.attended_prompt:
-            triage = _prompt_decisions(triage)
+            triage = _prompt_decisions(triage, triage_path=triage_file)
         else:
+            # In-memory only: leave needs_decision bundles in triage.json so a
+            # later attended resume can still ask.
             triage.bundles = [b for b in triage.bundles if not b.needs_decision]
 
         append_journal(
@@ -670,7 +739,7 @@ def continue_deferred(
             reused,
         )
         if not no_prompt and policy.sweep.attended_prompt:
-            triage = _prompt_decisions(triage)
+            triage = _prompt_decisions(triage, triage_path=triage_file)
         else:
             triage.bundles = [b for b in triage.bundles if not b.needs_decision]
 
