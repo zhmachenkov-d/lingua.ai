@@ -518,7 +518,7 @@ def _finish_built(
     run_id: str | None,
     deferred_count: int = 0,
 ) -> str | None:
-    del plan_fm, model  # reserved for future verify soft-checks
+    del plan_fm  # reserved for future verify soft-checks
     if deferred_count == 0 and plan_path:
         items = read_frontmatter(plan_path).get("deferred") or []
         if isinstance(items, list) and items:
@@ -532,6 +532,8 @@ def _finish_built(
             plan_path,
             tracker_id=tracker_id,
             policy=policy,
+            model=model,
+            dry_run=dry_run,
         )
 
     unit = UnitReport(
