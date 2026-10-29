@@ -99,6 +99,61 @@ def test_ready_unit_query_returns_ordered_stamped_chunks(migrated_url: str) -> N
 
 
 @pytest.mark.integration_db
+def test_ready_unit_with_empty_chunk_join_returns_none(migrated_url: str) -> None:
+    """Ready + empty chunk⋈embedding join is absence, same as missing/non-Ready."""
+    empty_chunks_ref = f"{EF4_BEG_SB_ID}/empty"
+    orphan_chunk_ref = f"{EF4_BEG_SB_ID}/orphan"
+
+    engine = create_engine(to_sqlalchemy_url(migrated_url))
+    try:
+        with Session(engine) as session:
+            session.add(Textbook(id=EF4_BEG_SB_ID, title="EF4 Beginner SB"))
+            session.flush()
+            session.add(
+                TextbookUnit(
+                    textbook_id=EF4_BEG_SB_ID,
+                    unit_ref=empty_chunks_ref,
+                    status="Ready",
+                    gate_reason=None,
+                    gate_metrics={"mean_chars_per_page": 400.0},
+                )
+            )
+            orphan_unit = TextbookUnit(
+                textbook_id=EF4_BEG_SB_ID,
+                unit_ref=orphan_chunk_ref,
+                status="Ready",
+                gate_reason=None,
+                gate_metrics={"mean_chars_per_page": 400.0},
+            )
+            session.add(orphan_unit)
+            session.flush()
+            session.add(
+                Chunk(
+                    unit_id=orphan_unit.id,
+                    textbook_id=EF4_BEG_SB_ID,
+                    unit_ref=orphan_chunk_ref,
+                    ordinal=0,
+                    content="chunk without embedding",
+                )
+            )
+            session.commit()
+    finally:
+        engine.dispose()
+
+    async def _run() -> None:
+        async_engine = create_async_engine(to_sqlalchemy_url(migrated_url))
+        factory = async_sessionmaker(async_engine, expire_on_commit=False)
+        try:
+            async with factory() as session:
+                assert await get_ready_unit_chunks(session, empty_chunks_ref) is None
+                assert await get_ready_unit_chunks(session, orphan_chunk_ref) is None
+        finally:
+            await async_engine.dispose()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.integration_db
 def test_unknown_and_not_ready_unit_query_return_none(migrated_url: str) -> None:
     not_ready_ref = f"{EF4_BEG_SB_ID}/9Z"
     review_ref = f"{EF4_BEG_SB_ID}/review"
