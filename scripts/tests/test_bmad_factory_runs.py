@@ -23,9 +23,11 @@ from bmad_factory.deferred import (
     SweepTriage,
     _filter_remaining_bundles,
     _handle_bundle_halt,
+    _prompt_decisions,
     _synthetic_ref,
     continue_deferred,
     find_initiative_ledgers,
+    parse_triage_response,
     triage_path_for,
 )
 from bmad_factory.pick import PickScope
@@ -360,6 +362,118 @@ class DeferredResumeTests(unittest.TestCase):
         done = {_synthetic_ref("One")}
         remaining = _filter_remaining_bundles(triage, completed_refs=done, only=None)
         self.assertEqual([b.title for b in remaining], ["Two"])
+
+    def test_prompt_decline_persists_so_resume_does_not_reask(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "triage.json"
+            triage = SweepTriage(
+                bundles=[
+                    SweepBundle(
+                        title="Free",
+                        intent="build free",
+                        entry_keys=["free-key"],
+                        needs_decision=False,
+                    ),
+                    SweepBundle(
+                        title="Spend Cap",
+                        intent="build cap",
+                        entry_keys=["cap-key"],
+                        needs_decision=True,
+                        decision_prompt="build now?",
+                    ),
+                    SweepBundle(
+                        title="Roadmap",
+                        intent="build roadmap",
+                        entry_keys=["road-key"],
+                        needs_decision=True,
+                        decision_prompt="elaborate?",
+                    ),
+                ]
+            )
+            with mock.patch("builtins.input", side_effect=["n", "n"]):
+                with mock.patch("sys.stdin.isatty", return_value=True):
+                    out = _prompt_decisions(triage, triage_path=path)
+
+            self.assertEqual([b.title for b in out.bundles], ["Free"])
+            self.assertIn("cap-key", out.skip_keys)
+            self.assertIn("road-key", out.skip_keys)
+
+            reloaded = parse_triage_response(
+                path.read_text(encoding="utf-8"),
+                known_keys={"free-key", "cap-key", "road-key"},
+            )
+            self.assertEqual([b.title for b in reloaded.bundles], ["Free"])
+            self.assertFalse(any(b.needs_decision for b in reloaded.bundles))
+
+            with mock.patch("builtins.input") as ask:
+                with mock.patch("sys.stdin.isatty", return_value=True):
+                    again = _prompt_decisions(reloaded, triage_path=path)
+                ask.assert_not_called()
+            self.assertEqual([b.title for b in again.bundles], ["Free"])
+
+    def test_prompt_approve_clears_needs_decision_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "triage.json"
+            triage = SweepTriage(
+                bundles=[
+                    SweepBundle(
+                        title="Maybe",
+                        intent="build it",
+                        entry_keys=["k"],
+                        needs_decision=True,
+                        decision_prompt="go?",
+                    ),
+                ]
+            )
+            with mock.patch("builtins.input", return_value="y"):
+                with mock.patch("sys.stdin.isatty", return_value=True):
+                    out = _prompt_decisions(triage, triage_path=path)
+            self.assertEqual(len(out.bundles), 1)
+            self.assertFalse(out.bundles[0].needs_decision)
+            disk = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(disk["bundles"][0]["needs_decision"], False)
+
+    def test_prompt_ctrl_c_persists_prior_decline(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "triage.json"
+            triage = SweepTriage(
+                bundles=[
+                    SweepBundle(
+                        title="First",
+                        intent="a",
+                        entry_keys=["a"],
+                        needs_decision=True,
+                        decision_prompt="a?",
+                    ),
+                    SweepBundle(
+                        title="Second",
+                        intent="b",
+                        entry_keys=["b"],
+                        needs_decision=True,
+                        decision_prompt="b?",
+                    ),
+                ]
+            )
+
+            responses: list[object] = ["n", KeyboardInterrupt()]
+
+            def answers(_prompt: str = "") -> str:
+                item = responses.pop(0)
+                if isinstance(item, BaseException):
+                    raise item
+                return str(item)
+
+            with mock.patch("builtins.input", side_effect=answers):
+                with mock.patch("sys.stdin.isatty", return_value=True):
+                    with self.assertRaises(KeyboardInterrupt):
+                        _prompt_decisions(triage, triage_path=path)
+
+            disk = json.loads(path.read_text(encoding="utf-8"))
+            titles = [b["title"] for b in disk["bundles"]]
+            self.assertEqual(titles, ["Second"])
+            self.assertTrue(disk["bundles"][0]["needs_decision"])
+            self.assertIn("a", disk["skip"])
 
     def test_continue_reuses_triage_json(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
