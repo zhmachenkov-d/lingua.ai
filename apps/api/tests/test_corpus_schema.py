@@ -51,18 +51,18 @@ def test_api_has_no_corpus_write_path_and_ingest_has_no_alembic() -> None:
         text = path.read_text(encoding="utf-8")
         if not any(name in text for name in corpus_names):
             continue
-        assert not re.search(
-            r"session\.(add|add_all|merge|delete)", text, re.I
-        ), f"corpus write path in {path.relative_to(REPO_ROOT)}"
+        assert not re.search(r"session\.(add|add_all|merge|delete)", text, re.I), (
+            f"corpus write path in {path.relative_to(REPO_ROOT)}"
+        )
 
     assert not (INGEST_ROOT / "alembic").exists()
     assert not (INGEST_ROOT / "alembic.ini").exists()
     ingest_app = INGEST_ROOT / "app"
     for path in ingest_app.rglob("*.py"):
         text = path.read_text(encoding="utf-8")
-        assert not re.search(
-            r"^\s*(from|import)\s+alembic\b", text, re.M | re.I
-        ), f"ingest must not import alembic: {path.relative_to(REPO_ROOT)}"
+        assert not re.search(r"^\s*(from|import)\s+alembic\b", text, re.M | re.I), (
+            f"ingest must not import alembic: {path.relative_to(REPO_ROOT)}"
+        )
 
 
 @pytest.mark.integration_db
