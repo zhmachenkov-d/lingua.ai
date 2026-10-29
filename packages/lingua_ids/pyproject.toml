@@ -1,7 +1,7 @@
 [project]
 name = "lingua-ids"
 version = "0.1.0"
-description = "Shared MVP textbook_id string constants for api and ingest"
+description = "Shared MVP textbook_id and embedding pin constants for api and ingest"
 requires-python = ">=3.13"
 dependencies = []
 

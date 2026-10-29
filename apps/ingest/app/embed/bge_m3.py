@@ -4,10 +4,12 @@ import logging
 import os
 from typing import Protocol
 
+from lingua_ids import EMBEDDING_DIMS, EMBEDDING_MODEL_NAME
+
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = "BAAI/bge-m3"
-EMBEDDING_DIMS = 1024
+# Re-exports of the shared AD-12 pin (SoT lives in lingua_ids).
+MODEL_NAME = EMBEDDING_MODEL_NAME
 
 
 class Embedder(Protocol):
@@ -23,7 +25,7 @@ class Embedder(Protocol):
 
 
 class BgeM3Embedder:
-    """Local ``BAAI/bge-m3`` dense vectors via FlagEmbedding @ 1024 dims."""
+    """Local BGE-M3 dense vectors via FlagEmbedding at the shared AD-12 dims."""
 
     def __init__(
         self,
