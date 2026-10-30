@@ -1,0 +1,8 @@
+id: ts-no-ts-ignore
+valid:
+  - "const x: number = 1;"
+  - "// expected type mismatch handled below"
+invalid:
+  - |
+    // @ts-ignore
+    const x: number = 'no';

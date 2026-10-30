@@ -1,0 +1,16 @@
+# AST Metrics — complexity / architecture review (soft in quality_gate by default).
+# Absolute caps stay off; tighten via wrapper --strict-metrics later.
+sources:
+  - ./apps/api
+  - ./apps/ingest
+  - ./apps/web
+  - ./packages
+exclude:
+  - "**/node_modules/**"
+  - "**/__pycache__/**"
+  - "**/.venv/**"
+  - "**/dist/**"
+  - "**/.angular/**"
+  - "**/alembic/versions/**"
+reports:
+  html: ./_bmad-output/quality/ast-metrics-html

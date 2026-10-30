@@ -5,6 +5,9 @@
 _bmad-output/
 _bmad/render/
 
+# Revet local cache / baseline (quality gate)
+.revet-cache/
+
 # Local BMAD factory runs / worktrees / policy overrides
 .bmad-factory/
 

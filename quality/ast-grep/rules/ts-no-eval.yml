@@ -1,0 +1,10 @@
+id: ts-no-eval
+language: TypeScript
+severity: error
+message: Do not use eval(); it executes arbitrary code.
+files:
+  - "apps/web/**/*.ts"
+ignores:
+  - "**/*.spec.ts"
+rule:
+  pattern: eval($$$ARGS)

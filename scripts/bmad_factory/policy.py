@@ -75,7 +75,7 @@ plan_checkpoint = true
 done_checkpoint = true
 
 [verify]
-commands = []
+commands = ["python scripts/quality_gate.py --base origin/main"]
 require_diff = true
 
 [scm]
@@ -150,9 +150,7 @@ def _int(section: dict[str, Any], key: str, default: int, *, min_value: int = 0)
     if not isinstance(val, int) or isinstance(val, bool):
         raise FactoryHalt(SHUTDOWN_ERROR, f"policy key {key!r} must be int")
     if val < min_value:
-        raise FactoryHalt(
-            SHUTDOWN_ERROR, f"policy key {key!r} must be >= {min_value}"
-        )
+        raise FactoryHalt(SHUTDOWN_ERROR, f"policy key {key!r} must be >= {min_value}")
     return val
 
 
@@ -200,9 +198,7 @@ def load_policy(project_root: Path, *, create_if_missing: bool = True) -> Policy
     _require_choice("scm", "remote", remote, {"none", "pr-merge"})
     target_branch = scm_raw.get("target_branch")
     if target_branch is not None and not isinstance(target_branch, str):
-        raise FactoryHalt(
-            SHUTDOWN_ERROR, "policy [scm].target_branch must be a string"
-        )
+        raise FactoryHalt(SHUTDOWN_ERROR, "policy [scm].target_branch must be a string")
 
     script = str(tickets_raw.get("script", "_bmad/method/scripts/tickets.py"))
     mark_done = str(tickets_raw.get("mark_done", "auto"))

@@ -1,0 +1,18 @@
+id: py-no-bare-except
+valid:
+  - |
+    try:
+        f()
+    except ValueError:
+        pass
+  - |
+    try:
+        f()
+    except Exception as e:
+        log(e)
+invalid:
+  - |
+    try:
+        f()
+    except:
+        pass

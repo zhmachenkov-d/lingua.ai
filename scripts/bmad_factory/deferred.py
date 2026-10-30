@@ -37,6 +37,7 @@ from .scm import (
     has_unpushed_or_new_commits,
     require_clean_tree,
 )
+from .verify_cmd import run_policy_verify
 
 ENTRY_RE = re.compile(
     r"^- source_plan:\s*`?([^`\n]+)`?\s*\n"
@@ -389,6 +390,13 @@ def _run_bundle(
         return
     if agent.error:
         raise FactoryHalt(SHUTDOWN_ERROR, agent.error)
+
+    run_policy_verify(
+        project_root,
+        policy,
+        ticket_ref=synthetic_ref,
+        agent_run_id=agent.run_id or agent.agent_id,
+    )
 
     want_remote = policy.scm.remote == "pr-merge" and not no_push
     pr_url = None

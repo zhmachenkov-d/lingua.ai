@@ -45,6 +45,7 @@ from .scm import (
     run_git,
 )
 from .tickets_io import tickets_find, tickets_mark_done, tickets_status
+from .verify_cmd import run_policy_verify
 
 
 def build_prompt(
@@ -520,12 +521,19 @@ def _finish_built(
     run_id: str | None,
     deferred_count: int = 0,
 ) -> str | None:
-    del plan_fm  # reserved for future verify soft-checks
+    del plan_fm  # plan frontmatter already applied upstream; unused at finish
     if deferred_count == 0 and plan_path:
         items = read_frontmatter(plan_path).get("deferred") or []
         if isinstance(items, list) and items:
             # Already harvested on first built pass; ignore duplicates.
             pass
+
+    run_policy_verify(
+        project_root,
+        policy,
+        ticket_ref=ticket_ref,
+        agent_run_id=run_id or agent_id,
+    )
 
     if policy.tickets.mark_done == "auto" and plan_path:
         tickets_mark_done(

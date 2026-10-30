@@ -1,0 +1,7 @@
+id: ts-no-non-null-assertion-chain
+valid:
+  - "const name = user!.name;"
+  - "const a = maybe?.prop;"
+invalid:
+  - "const city = user!.address!.city;"
+  - "return a!.b!.c;"

@@ -1,0 +1,45 @@
+# Revet — blast-radius / impact review (soft in quality_gate by default).
+# Deterministic modules only; no AI. Tighten via wrapper --strict-impact later.
+
+[general]
+diff_base = "main"
+fail_on = "never"
+
+[modules]
+security = true
+ml = true
+cycles = true
+infra = false
+react = false
+async_patterns = false
+dependency = false
+error_handling = false
+complexity = false
+dead_imports = false
+dead_code = false
+toolchain = false
+hardcoded_endpoints = false
+magic_numbers = false
+test_coverage = false
+duplication = false
+call_graph_depth = 3
+
+[ignore]
+paths = [
+  "vendor/",
+  "node_modules/",
+  "dist/",
+  "_bmad/",
+  "_bmad-output/",
+  "textbooks/",
+  ".venv/",
+]
+
+[ignore.per_path]
+"**/tests/**" = ["SEC", "SQL"]
+"**/*.spec.ts" = ["SEC", "SQL"]
+
+[output]
+format = "json"
+color = false
+show_evidence = true

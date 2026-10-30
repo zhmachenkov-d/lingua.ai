@@ -1,0 +1,6 @@
+# ast-grep project config — rules live under quality/ast-grep/
+# Scan respects .gitignore (_bmad, _bmad-output, textbooks, node_modules, .venv).
+ruleDirs:
+  - quality/ast-grep/rules
+testConfigs:
+  - testDir: quality/ast-grep/rule-tests

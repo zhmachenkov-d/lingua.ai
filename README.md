@@ -20,13 +20,13 @@ Host publish ports are fixed in `compose.yaml` (`127.0.0.1` only): `4200` → we
 
 Second-operator / SM-2 onboarding: copy `.env.example` → `.env`, then fill the keys below. Compose substitutes `${VAR}` from the project `.env` only — services do **not** get an `env_file` dump of every key. Never commit `.env` or real keys.
 
-| Variable            | Required?                                                   | Purpose                                                   | How to obtain                                                                           |
-| ------------------- | ----------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + credential parts for `api` URL   | Choose a local username (example uses `lingua`)                                         |
-| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (raw secret for api URL construction)   | Choose a local password; keep it out of git                                             |
-| `POSTGRES_DB`       | **Yes**                                                     | Database name                                             | Choose a local name (example uses `lingua`)                                             |
-| `DEEPSEEK_API_KEY`  | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek)                         | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
-| `GH_TOKEN`          | No (Compose ignores it)                                     | Host GitHub CLI / Codespaces only                         | Optional; leave empty for Compose                                                       |
+| Variable            | Required?                                                   | Purpose                                                 | How to obtain                                                                           |
+| ------------------- | ----------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `POSTGRES_USER`     | **Yes** (compose fails without it)                          | Postgres role for `db` + credential parts for `api` URL | Choose a local username (example uses `lingua`)                                         |
+| `POSTGRES_PASSWORD` | **Yes**                                                     | Postgres password (raw secret for api URL construction) | Choose a local password; keep it out of git                                             |
+| `POSTGRES_DB`       | **Yes**                                                     | Database name                                           | Choose a local name (example uses `lingua`)                                             |
+| `DEEPSEEK_API_KEY`  | Optional for `compose up`; needed for non-blank `/ws` turns | In-process LLM adapter (DeepSeek)                       | Create an API key at [platform.deepseek.com](https://platform.deepseek.com/) → API keys |
+| `GH_TOKEN`          | No (Compose ignores it)                                     | Host GitHub CLI / Codespaces only                       | Optional; leave empty for Compose                                                       |
 
 `DATABASE_URL` is **not** a host secret — Compose passes `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` / `POSTGRES_HOST` (`db` on the default stack, `127.0.0.1` on `compose.dev.yaml`) into `api`, which builds a percent-encoded `postgresql://` URL so passwords with `@`, `:`, `/`, etc. still parse. CI and local tests may set an explicit `DATABASE_URL` instead.
 
@@ -88,12 +88,12 @@ The web Dockerfile may keep `# syntax=docker/dockerfile:1` (BuildKit); that is f
 
 ### URLs
 
-| Service                              | URL                              |
-| ------------------------------------ | -------------------------------- |
-| Web (Angular chat shell via nginx)   | http://127.0.0.1:4200/           |
-| API liveness (direct)                | http://127.0.0.1:8000/health     |
-| API readiness (DB probe)             | http://127.0.0.1:8000/ready      |
-| API readiness via web proxy          | http://127.0.0.1:4200/api/ready  |
+| Service                               | URL                             |
+| ------------------------------------- | ------------------------------- |
+| Web (Angular chat shell via nginx)    | http://127.0.0.1:4200/          |
+| API liveness (direct)                 | http://127.0.0.1:8000/health    |
+| API readiness (DB probe)              | http://127.0.0.1:8000/ready     |
+| API readiness via web proxy           | http://127.0.0.1:4200/api/ready |
 | API learner WebSocket (via web proxy) | ws://127.0.0.1:4200/ws          |
 | API learner WebSocket (direct)        | ws://127.0.0.1:8000/ws          |
 
@@ -203,7 +203,32 @@ npm run typecheck
 npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 ```
 
-**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`.
+**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`; **AST quality gate** (`quality-ast` job — make it a **required** branch check on `main` in GitHub settings).
+
+### AST quality gate
+
+Deterministic layered check (not an LLM review):
+
+| Layer            | Tool                                                                           | Default                            | What it catches                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------ | ---------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Antipatterns     | [ast-grep](https://ast-grep.github.io/) (`sgconfig.yml` + `quality/ast-grep/`) | **hard fail** on `severity: error` | bare `except`, `eval`/`exec`, cross-app imports, `shell=True`, TS `as any` / `@ts-ignore`, etc. |
+| Complexity delta | [AST Metrics](https://ast-metrics.dev/) (`.ast-metrics.yaml`)                  | soft (report-only)                 | complexity / maintainability regressions vs base                                                |
+| Blast radius     | [Revet](https://revet.dev/) (`.revet.toml`)                                    | soft (report-only)                 | impact / security / cycle findings on the diff                                                  |
+
+One entrypoint for CI and BMAD factory `[verify]`:
+
+```bash
+# Install pinned binaries (see scripts/quality/versions.env)
+bash scripts/quality/install_tools.sh
+export PATH="$HOME/.local/bin:$PATH"
+
+python scripts/quality_gate.py --base origin/main
+# Later tighten soft layers without rewriting the gate:
+#   python scripts/quality_gate.py --base origin/main --strict-impact
+#   python scripts/quality_gate.py --base origin/main --strict-metrics
+```
+
+Per-run JSON lands under `_bmad-output/quality/runs/` (gitignored); CI uploads that tree as an Actions artifact (~30 days). Append-only local metrics: `_bmad-output/quality/metrics.jsonl` (also gitignored — do not commit). Rule unit tests: `ast-grep test --skip-snapshot-tests`.
 
 ### Ingest Ready corpus
 

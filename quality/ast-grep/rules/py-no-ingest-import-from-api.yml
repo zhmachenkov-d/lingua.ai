@@ -1,0 +1,13 @@
+id: py-no-ingest-import-from-api
+language: Python
+severity: error
+message: api must not import apps.ingest (keep app boundaries).
+note: Shared corpus models/IDs belong in packages/*; api reads Ready data from the DB.
+files:
+  - "apps/api/**/*.py"
+rule:
+  any:
+    - pattern: import apps.ingest
+    - pattern: import apps.ingest.$$$REST
+    - pattern: from apps.ingest import $$$NAMES
+    - pattern: from apps.ingest.$$$MOD import $$$NAMES

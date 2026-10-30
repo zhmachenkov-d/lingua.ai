@@ -1,0 +1,13 @@
+id: py-no-api-import-from-ingest
+language: Python
+severity: error
+message: ingest must not import apps.api (keep app boundaries).
+note: Shared types/IDs belong in packages/*; ingest writes via its own persist layer.
+files:
+  - "apps/ingest/**/*.py"
+rule:
+  any:
+    - pattern: import apps.api
+    - pattern: import apps.api.$$$REST
+    - pattern: from apps.api import $$$NAMES
+    - pattern: from apps.api.$$$MOD import $$$NAMES

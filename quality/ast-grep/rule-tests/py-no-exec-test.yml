@@ -1,0 +1,7 @@
+id: py-no-exec
+valid:
+  - "execute(plan)"
+  - "run_exec_job()"
+invalid:
+  - "exec(code)"
+  - "exec(compile(s, '<s>', 'exec'))"

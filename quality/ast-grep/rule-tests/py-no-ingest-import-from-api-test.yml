@@ -1,0 +1,7 @@
+id: py-no-ingest-import-from-api
+valid:
+  - "from lingua_corpus.models import ChunkRow"
+  - "from app.corpus import query"
+invalid:
+  - "from apps.ingest.app.embed import bge_m3"
+  - "import apps.ingest"

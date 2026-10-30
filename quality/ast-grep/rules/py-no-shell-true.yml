@@ -1,0 +1,17 @@
+id: py-no-shell-true
+language: Python
+severity: error
+message: Avoid subprocess with shell=True; pass an argv list instead.
+files:
+  - "apps/**/*.py"
+  - "packages/**/*.py"
+  - "scripts/**/*.py"
+ignores:
+  - "**/tests/**"
+rule:
+  any:
+    - pattern: subprocess.run($$$ARGS, shell=True)
+    - pattern: subprocess.Popen($$$ARGS, shell=True)
+    - pattern: subprocess.call($$$ARGS, shell=True)
+    - pattern: subprocess.check_call($$$ARGS, shell=True)
+    - pattern: subprocess.check_output($$$ARGS, shell=True)

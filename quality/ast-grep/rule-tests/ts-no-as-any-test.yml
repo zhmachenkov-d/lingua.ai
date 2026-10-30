@@ -1,0 +1,7 @@
+id: ts-no-as-any
+valid:
+  - "const n = value as number;"
+  - "const u = value as unknown;"
+invalid:
+  - "const x = value as any;"
+  - "return data as any;"

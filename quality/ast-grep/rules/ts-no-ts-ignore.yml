@@ -1,0 +1,11 @@
+id: ts-no-ts-ignore
+language: TypeScript
+severity: error
+message: Do not use @ts-ignore; fix the type error or use a typed escape with a comment.
+files:
+  - "apps/web/**/*.ts"
+ignores:
+  - "**/*.spec.ts"
+rule:
+  kind: comment
+  regex: "@ts-ignore"

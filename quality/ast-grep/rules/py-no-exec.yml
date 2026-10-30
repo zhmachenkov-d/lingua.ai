@@ -1,0 +1,12 @@
+id: py-no-exec
+language: Python
+severity: error
+message: Do not use exec(); it executes arbitrary code.
+files:
+  - "apps/**/*.py"
+  - "packages/**/*.py"
+  - "scripts/**/*.py"
+ignores:
+  - "**/tests/**"
+rule:
+  pattern: exec($$$ARGS)
