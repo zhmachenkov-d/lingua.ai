@@ -112,8 +112,17 @@ class ErrorEvent(BaseModel):
 
 
 class TokenDeltaEvent(BaseModel):
-    """Reserved AD-6 kind — unused on CTA/blank skeleton paths."""
+    """AD-6 streaming delta — emitted on Tutor teach before ``turn_complete``."""
 
     kind: Literal["token_delta"] = "token_delta"
     text: str = Field(default="")
     turn_id: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "kind": self.kind,
+            "text": self.text,
+        }
+        if self.turn_id is not None:
+            payload["turn_id"] = self.turn_id
+        return payload

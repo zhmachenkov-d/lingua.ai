@@ -1,4 +1,4 @@
-"""Python CTAS must match web CtaId / label-map keys (#74)."""
+"""Python KNOWN_CTA_IDS must match web CtaId / label-map keys (#74 + cefr)."""
 
 from __future__ import annotations
 
@@ -11,15 +11,15 @@ CHAT_TYPES_TS = REPO_ROOT / "apps" / "web" / "src" / "app" / "chat" / "chat.type
 CTA_LABELS_TS = REPO_ROOT / "apps" / "web" / "src" / "app" / "chat" / "cta-labels.ts"
 
 
-def _python_ctas() -> list[str]:
+def _python_known_cta_ids() -> list[str]:
     text = TURN_PY.read_text()
     match = re.search(
-        r"(?m)^CTAS: Final(?:\[[^\]]+\])? = \(([^)]*)\)",
+        r"(?m)^KNOWN_CTA_IDS: Final(?:\[[^\]]+\])? = \(([^)]*)\)",
         text,
     )
-    assert match is not None, "CTAS tuple not found in turn.py"
+    assert match is not None, "KNOWN_CTA_IDS tuple not found in turn.py"
     ids = re.findall(r'"([^"]+)"', match.group(1))
-    assert ids, "CTAS tuple is empty"
+    assert ids, "KNOWN_CTA_IDS tuple is empty"
     return ids
 
 
@@ -50,14 +50,14 @@ def _ts_label_keys() -> list[str]:
 
 
 def test_cta_id_sets_locked_across_api_and_web() -> None:
-    python_ids = _python_ctas()
+    python_ids = _python_known_cta_ids()
     ts_ids = _ts_cta_ids()
     label_keys = _ts_label_keys()
     assert set(python_ids) == set(ts_ids) == set(label_keys), (
-        f"CTA id sets diverge: CTAS={python_ids!r} CtaId={ts_ids!r} "
+        f"CTA id sets diverge: KNOWN_CTA_IDS={python_ids!r} CtaId={ts_ids!r} "
         f"CTA_LABELS keys={label_keys!r}"
     )
     assert python_ids == ts_ids == label_keys, (
-        f"CTA id order diverges: CTAS={python_ids!r} CtaId={ts_ids!r} "
+        f"CTA id order diverges: KNOWN_CTA_IDS={python_ids!r} CtaId={ts_ids!r} "
         f"CTA_LABELS keys={label_keys!r}"
     )

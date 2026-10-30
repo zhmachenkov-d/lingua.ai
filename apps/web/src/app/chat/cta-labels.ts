@@ -4,6 +4,14 @@ const CTA_LABELS: Record<CtaId, string> = {
   tutor: 'Tutor',
   vocabulary: 'Vocabulary',
   review: 'Review',
+  cefr: 'Указать CEFR',
+};
+
+/** CTA chip id → turn intent token (cefr navigates; not classified). */
+export const CTA_INTENT: Record<Exclude<CtaId, 'cefr'>, string> = {
+  tutor: 'tutor_unit',
+  vocabulary: 'vocab_lookup',
+  review: 'review_daily',
 };
 
 const KNOWN_IDS = new Set<string>(Object.keys(CTA_LABELS));

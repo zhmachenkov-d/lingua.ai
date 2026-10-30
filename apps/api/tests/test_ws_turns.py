@@ -16,7 +16,15 @@ from app.llm.adapter import (
     LlmUnavailable,
 )
 from app.main import app
-from app.router.turn import CTA_MESSAGE, CTAS, TurnError, TurnSuccess, handle_turn
+from app.router.turn import (
+    BLANK_INPUT,
+    CTA_MESSAGE,
+    CTAS,
+    UNKNOWN_INTENT,
+    TurnError,
+    TurnSuccess,
+    handle_turn,
+)
 from app.schemas.ws import MAX_TURN_TEXT_LENGTH
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -71,6 +79,38 @@ def test_happy_cta_turn_complete_no_token_delta(client: TestClient) -> None:
     assert event["turn_id"] == "t-1"
 
 
+def test_teach_emits_token_delta_then_turn_complete(client: TestClient) -> None:
+    teach = TurnSuccess(
+        message="Разберём unit ef4-beg-sb/1A",
+        ctas=(),
+        clarify=None,
+        backup_notice=None,
+        turn_id="teach-1",
+        last_user_text="tutor_unit",
+        emit_token_delta=True,
+    )
+    with patch(
+        "app.api.routes.ws.handle_turn",
+        new_callable=AsyncMock,
+        return_value=teach,
+    ):
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json(
+                {"kind": "turn_request", "text": "tutor_unit", "turn_id": "teach-1"}
+            )
+            delta = ws.receive_json()
+            complete = ws.receive_json()
+    assert delta == {
+        "kind": "token_delta",
+        "text": "Разберём unit ef4-beg-sb/1A",
+        "turn_id": "teach-1",
+    }
+    assert complete["kind"] == "turn_complete"
+    assert complete["message"] == teach.message
+    assert complete["ctas"] == []
+    assert complete["turn_id"] == "teach-1"
+
+
 def test_blank_skips_llm_and_returns_cta(client: TestClient) -> None:
     with (
         patch("app.router.turn.classify_turn", new_callable=AsyncMock) as classify,
@@ -85,6 +125,7 @@ def test_blank_skips_llm_and_returns_cta(client: TestClient) -> None:
             event = ws.receive_json()
     classify.assert_not_awaited()
     assert event["kind"] == "turn_complete"
+    assert event["message"] == BLANK_INPUT
     assert event["ctas"] == list(CTAS)
     assert event["backup_notice"] is None
     assert "turn_id" not in event
@@ -229,7 +270,7 @@ def test_escalation_sets_backup_notice(client: TestClient) -> None:
     with patch(
         "app.router.turn.classify_turn",
         new_callable=AsyncMock,
-        return_value=ClassifyResult(handoff=None, used_backup=True),
+        return_value=ClassifyResult(intent=None, band="unknown", used_backup=True),
     ):
         with patch(
             "app.router.turn.write_turn_snapshot",
@@ -241,7 +282,7 @@ def test_escalation_sets_backup_notice(client: TestClient) -> None:
                 event = ws.receive_json()
     assert event["kind"] == "turn_complete"
     assert event["backup_notice"] == BACKUP_NOTICE
-    assert event["message"] == CTA_MESSAGE
+    assert event["message"] == UNKNOWN_INTENT
     assert BACKUP_NOTICE not in event["message"]
 
 
@@ -249,7 +290,7 @@ def test_aput_fail_no_turn_complete(client: TestClient) -> None:
     with patch(
         "app.router.turn.classify_turn",
         new_callable=AsyncMock,
-        return_value=ClassifyResult(handoff=None, used_backup=False),
+        return_value=ClassifyResult(intent=None, band="unknown", used_backup=False),
     ):
         with patch(
             "app.router.turn.write_turn_snapshot",
@@ -338,7 +379,7 @@ def test_handle_turn_blank_no_llm() -> None:
     classify.assert_not_awaited()
     assert isinstance(result, TurnSuccess)
     assert result.backup_notice is None
-    assert result.message == CTA_MESSAGE
+    assert result.message == BLANK_INPUT
 
 
 def test_disconnect_mid_turn_cancels_without_snapshot(client: TestClient) -> None:
@@ -350,7 +391,7 @@ def test_disconnect_mid_turn_cancels_without_snapshot(client: TestClient) -> Non
     async def slow_classify(*_a: object, **_k: object) -> ClassifyResult:
         started.set()
         await release.wait()
-        return ClassifyResult(handoff=None, used_backup=False)
+        return ClassifyResult(intent=None, band="unknown", used_backup=False)
 
     with (
         patch("app.router.turn.classify_turn", side_effect=slow_classify),

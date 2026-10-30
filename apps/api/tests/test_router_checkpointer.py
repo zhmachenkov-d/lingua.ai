@@ -186,7 +186,7 @@ def test_handle_turn_success_persists_after_classify(migrated_url: str) -> None:
     with patch(
         "app.router.turn.classify_turn",
         new_callable=AsyncMock,
-        return_value=ClassifyResult(handoff=None, used_backup=False),
+        return_value=ClassifyResult(intent=None, band="unknown", used_backup=False),
     ):
         result = asyncio.run(
             handle_turn("study", turn_id="r1", database_url=migrated_url)
@@ -201,7 +201,7 @@ def test_handle_turn_success_persists_after_classify(migrated_url: str) -> None:
 @pytest.mark.integration_db
 def test_handle_turn_multiturn_updates_last_user_text(migrated_url: str) -> None:
     classify = AsyncMock(
-        return_value=ClassifyResult(handoff=None, used_backup=False),
+        return_value=ClassifyResult(intent=None, band="unknown", used_backup=False),
     )
     with patch("app.router.turn.classify_turn", classify):
         first = asyncio.run(
@@ -224,7 +224,7 @@ def test_handle_turn_blank_after_nonblank_wipes_last_user_text(
     migrated_url: str,
 ) -> None:
     classify = AsyncMock(
-        return_value=ClassifyResult(handoff=None, used_backup=False),
+        return_value=ClassifyResult(intent=None, band="unknown", used_backup=False),
     )
     with patch("app.router.turn.classify_turn", classify):
         first = asyncio.run(
@@ -390,3 +390,94 @@ def test_handle_turn_succeeds_when_mirror_fails() -> None:
     assert isinstance(result, TurnSuccess)
     assert result.turn_id == "m1"
     saver.aput.assert_awaited_once()
+
+
+def test_write_turn_snapshot_preserves_prior_namespaced_keys() -> None:
+    """Blank/stub turns must not drop prior tutor.active_unit_ref."""
+    from langgraph.checkpoint.base.id import uuid6
+
+    prior = {
+        "v": 4,
+        "id": str(uuid6()),
+        "ts": "2026-10-29T00:00:00+00:00",
+        "channel_values": {
+            "last_user_text": "tutor_unit",
+            "active_agent": "Tutor",
+            "turn_at": "2026-10-29T00:00:00+00:00",
+            "tutor": {"active_unit_ref": "ef4-beg-sb/1A"},
+        },
+        "channel_versions": {
+            "last_user_text": "00000000000000000000000000000001.0.0",
+            "active_agent": "00000000000000000000000000000001.0.0",
+            "turn_at": "00000000000000000000000000000001.0.0",
+            "tutor": "00000000000000000000000000000001.0.0",
+        },
+        "versions_seen": {},
+        "updated_channels": [
+            "last_user_text",
+            "active_agent",
+            "turn_at",
+            "tutor",
+        ],
+    }
+    fake_open, saver = _ok_checkpointer_open()
+    saver.aget = AsyncMock(return_value=prior)
+    version_seq = iter(
+        [
+            "00000000000000000000000000000002.0.0",
+            "00000000000000000000000000000002.0.0",
+            "00000000000000000000000000000002.0.0",
+            "00000000000000000000000000000002.0.0",
+        ]
+    )
+    saver.get_next_version = MagicMock(side_effect=lambda *_a, **_k: next(version_seq))
+
+    with (
+        patch("app.router.turn._snapshot_write_lock", _noop_snapshot_write_lock),
+        patch("app.router.turn.open_checkpointer", fake_open),
+        patch(
+            "app.router.turn.upsert_session_mirror",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        written = asyncio.run(
+            write_turn_snapshot(
+                last_user_text="",
+                active_agent=None,
+                session_patch={},
+            )
+        )
+
+    assert written["last_user_text"] == ""
+    assert written["active_agent"] is None
+    assert written["tutor"] == {"active_unit_ref": "ef4-beg-sb/1A"}
+    aput_checkpoint = saver.aput.await_args.args[1]
+    assert set(aput_checkpoint["channel_versions"]) == {
+        "last_user_text",
+        "active_agent",
+        "turn_at",
+        "tutor",
+    }
+
+
+def test_tutor_handoff_db_failure_is_not_llm_unavailable() -> None:
+    with (
+        patch(
+            "app.router.turn.classify_turn",
+            new_callable=AsyncMock,
+            return_value=ClassifyResult(
+                intent="tutor_unit", band="high", used_backup=False
+            ),
+        ),
+        patch(
+            "app.router.turn._learner_db_session",
+            side_effect=RuntimeError("db down"),
+        ),
+        patch("app.router.turn.write_turn_snapshot", new_callable=AsyncMock) as write,
+    ):
+        result = asyncio.run(handle_turn("tutor_unit", turn_id="t-db"))
+    write.assert_not_awaited()
+    assert isinstance(result, TurnError)
+    assert result.code == "checkpointer_write_failed"
+    assert result.turn_id == "t-db"
