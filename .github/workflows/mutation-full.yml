@@ -1,0 +1,71 @@
+name: Mutation full (soft)
+
+on:
+  schedule:
+    # Weekly Monday 03:15 UTC
+    - cron: "15 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  api-mutation-full:
+    name: api mutation full (soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Sync api deps
+        working-directory: apps/api
+        run: uv sync --extra dev
+      - name: Run mutmut full soft gate
+        run: bash scripts/quality/run_mutation_api.sh --full --base origin/main
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-api-full-${{ github.run_id }}
+          path: |
+            _bmad-output/quality/mutation/
+            apps/api/mutants/mutmut-cicd-stats.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  web-mutation-full:
+    name: web mutation full (soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Run Stryker full soft gate
+        run: bash scripts/quality/run_mutation_web.sh --full --base origin/main
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-web-full-${{ github.run_id }}
+          path: |
+            _bmad-output/quality/mutation/
+            apps/web/reports/mutation/
+          retention-days: 30
+          if-no-files-found: ignore

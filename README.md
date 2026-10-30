@@ -203,7 +203,7 @@ npm run typecheck
 npm test   # ng test --watch=false (Vitest + jsdom; not e2e)
 ```
 
-**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`; **AST quality gate** (`quality-ast` job — make it a **required** branch check on `main` in GitHub settings).
+**CI** (`.github/workflows/ci.yml` on push/PR to `main`): api ruff + mypy; api `uv run pytest -m "not integration_db"` (no Postgres); api `uv run pytest -m integration_db` against a `pgvector/pgvector:pg16` service with `DATABASE_URL` and `CI=true` (skipped `integration_db` is a failure); web lint / format check / typecheck; web unit tests with `--watch=false`; **AST quality gate** (`quality-ast` job — make it a **required** branch check on `main` in GitHub settings); **mutation soft gates** (`api-mutation`, `web-mutation` — report-only, `continue-on-error`, not required checks). Weekly full sweeps: `.github/workflows/mutation-full.yml`.
 
 ### AST quality gate
 
@@ -214,6 +214,15 @@ Deterministic layered check (not an LLM review):
 | Antipatterns     | [ast-grep](https://ast-grep.github.io/) (`sgconfig.yml` + `quality/ast-grep/`) | **hard fail** on `severity: error` | bare `except`, `eval`/`exec`, cross-app imports, `shell=True`, TS `as any` / `@ts-ignore`, etc. |
 | Complexity delta | [AST Metrics](https://ast-metrics.dev/) (`.ast-metrics.yaml`)                  | soft (report-only)                 | complexity / maintainability regressions vs base                                                |
 | Blast radius     | [Revet](https://revet.dev/) (`.revet.toml`)                                    | soft (report-only)                 | impact / security / cycle findings on the diff                                                  |
+
+### Mutation soft gates
+
+Separate from the AST gate (not in `quality_gate.py` / BMAD `[verify]`). Soft = job uses `continue-on-error`; normalized summary always lands under `_bmad-output/quality/mutation/{api,web}.json` with `hard: false`. Score = `(killed + timeout) / (killed + survived + timeout) * 100`. Baselines start at `min_score: 0` in `quality/mutation/*-baseline.json` — raise after a couple of green full runs.
+
+| Stack | Tool                                                                                      | Scope                                                                                             | Local                                             |
+| ----- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| API   | [mutmut](https://mutmut.readthedocs.io/)                                                  | unit (`not integration_db`); `app/{llm,router,review,tutor,corpus}`; PR skips when no scoped diff | `bash scripts/quality/run_mutation_api.sh --full` |
+| Web   | [Stryker](https://stryker-mutator.io/) + Vitest (Angular `dump-virtual-files` workaround) | `src/app/**/*.ts` excl. specs; PR uses `--since`                                                  | `bash scripts/quality/run_mutation_web.sh --full` |
 
 One entrypoint for CI and BMAD factory `[verify]`:
 

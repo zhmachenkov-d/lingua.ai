@@ -113,6 +113,95 @@ jobs:
       - run: npm ci
       - run: npm test
 
+  api-mutation:
+    name: api mutation (soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    env:
+      CI: "true"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Resolve base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "mode=pr" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=origin/main" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Sync api deps
+        working-directory: apps/api
+        run: uv sync --extra dev
+      - name: Run mutmut soft gate
+        run: |
+          bash scripts/quality/run_mutation_api.sh \
+            --"${{ steps.base.outputs.mode }}" \
+            --base "${{ steps.base.outputs.ref }}"
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-api-${{ github.run_id }}
+          path: |
+            _bmad-output/quality/mutation/
+            apps/api/mutants/mutmut-cicd-stats.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  web-mutation:
+    name: web mutation (soft)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Resolve base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+            echo "mode=pr" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=origin/main" >> "$GITHUB_OUTPUT"
+            echo "mode=full" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install web deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Run Stryker soft gate
+        run: |
+          bash scripts/quality/run_mutation_web.sh \
+            --"${{ steps.base.outputs.mode }}" \
+            --base "${{ steps.base.outputs.ref }}"
+      - name: Upload mutation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-web-${{ github.run_id }}
+          path: |
+            _bmad-output/quality/mutation/
+            apps/web/reports/mutation/
+          retention-days: 30
+          if-no-files-found: ignore
+
   quality-ast:
     name: AST quality gate
     runs-on: ubuntu-latest

@@ -8,6 +8,13 @@ _bmad/render/
 # Revet local cache / baseline (quality gate)
 .revet-cache/
 
+# Mutation testing (mutmut / Stryker)
+**/mutants/
+apps/api/contracts/
+apps/web/reports/
+apps/web/.stryker-tmp/
+apps/web/coverage/
+
 # Local BMAD factory runs / worktrees / policy overrides
 .bmad-factory/
 

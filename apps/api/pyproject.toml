@@ -29,6 +29,7 @@ dev = [
   "pytest>=8.0.0",
   "ruff>=0.11.0",
   "mypy>=1.15.0",
+  "mutmut>=3,<4",
 ]
 
 [build-system]
@@ -56,3 +57,36 @@ python_version = "3.13"
 strict = true
 packages = ["app"]
 ignore_missing_imports = true
+
+[tool.mutmut]
+source_paths = ["app"]
+only_mutate = [
+  "app/llm/*.py",
+  "app/router/*.py",
+  "app/review/*.py",
+  "app/tutor/*.py",
+  "app/corpus/*.py",
+]
+do_not_mutate = [
+  "app/*/__init__.py",
+  "app/__init__.py",
+]
+also_copy = [
+  "contracts",
+]
+pytest_add_cli_args_test_selection = [
+  "-m", "not integration_db",
+  "--ignore=tests/test_max_turn_length_contract.py",
+  "--ignore=tests/test_chat_turn_idle_budget.py",
+  "--ignore=tests/test_cta_id_contract.py",
+  "--ignore=tests/test_corpus_schema.py",
+  "--ignore=tests/test_ws_close_code_contract.py",
+  "--ignore=tests/test_compose_api_start_period.py",
+  "--ignore=tests/test_ws_occupancy_single_worker_gate.py",
+  "--ignore=tests/test_compose_web_depends_on.py",
+  "--ignore=tests/test_ci_api_unit_job.py",
+  "--deselect=tests/test_memory_plane.py::test_session_non_sot_wording_in_model_and_readme",
+]
+pytest_add_cli_args = ["-q", "--tb=no"]
+mutate_only_covered_lines = true
+use_git_change_detection = false
