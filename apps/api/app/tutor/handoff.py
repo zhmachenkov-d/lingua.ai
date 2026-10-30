@@ -15,8 +15,9 @@ from typing import Any, Final
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.corpus.query import get_ready_unit_chunks
+from app.mixins.cefr import read_overall_cefr
+from app.schemas.cefr import CefrLevel
 from app.tutor.bind import UnitKind, classify_unit_ref, first_ready_sb_unit_ref
-from app.tutor.cefr_gate import read_overall_cefr
 from app.tutor.copy import (
     CEFR_MISSING,
     EMPTY_RAG,
@@ -27,7 +28,7 @@ from app.tutor.copy import (
     UNIT_CHANGE_CONFIRM,
     WORKBOOK_ONLY,
 )
-from app.tutor.teach import grounded_teach_message
+from app.tutor.teach import compose_teach_message
 
 AGENT_CTAS: Final = ("tutor", "vocabulary", "review")
 CEFR_GATE_CTAS: Final = ("cefr", "vocabulary", "review")
@@ -141,6 +142,7 @@ async def _teach_or_empty(
     session: AsyncSession,
     unit_ref: str,
     *,
+    overall: CefrLevel,
     text: str,
     check_off_unit: bool,
 ) -> TutorOutcome:
@@ -160,7 +162,7 @@ async def _teach_or_empty(
             active_agent="Tutor",
         )
     return TutorOutcome(
-        message=grounded_teach_message(corpus),
+        message=await compose_teach_message(corpus, overall),
         ctas=(),
         session_patch=_tutor_patch(active_unit_ref=unit_ref),
         active_agent="Tutor",
@@ -172,13 +174,18 @@ async def _ready_loss_or_teach(
     session: AsyncSession,
     unit_ref: str,
     *,
+    overall: CefrLevel,
     text: str,
     had_active_session: bool,
 ) -> TutorOutcome:
     kind = await classify_unit_ref(session, unit_ref)
     if kind == "sb_ready":
         return await _teach_or_empty(
-            session, unit_ref, text=text, check_off_unit=had_active_session
+            session,
+            unit_ref,
+            overall=overall,
+            text=text,
+            check_off_unit=had_active_session,
         )
     if had_active_session and kind == "sb_non_ready":
         # Current STM unit lost Ready (not chrome switch-away).
@@ -227,13 +234,21 @@ async def handle_tutor(
             msg = _kind_to_refuse_message(kind) or NO_READY
             return _refuse(msg, patch=_tutor_patch(active_unit_ref=active_ref))
         return await _teach_or_empty(
-            session, pending_ref, text=text, check_off_unit=False
+            session,
+            pending_ref,
+            overall=overall,
+            text=text,
+            check_off_unit=False,
         )
     if key == DECLINE_UNIT:
         if active_ref is None:
             return _refuse(NULL_UNIT)
         return await _teach_or_empty(
-            session, active_ref, text=text, check_off_unit=False
+            session,
+            active_ref,
+            overall=overall,
+            text=text,
+            check_off_unit=False,
         )
 
     # Mid-session chrome change: finish this turn's branch; never RAG on stale unit.
@@ -286,7 +301,11 @@ async def handle_tutor(
             )
         # Cold explicit Ready chrome, or re-select same Ready unit.
         return await _teach_or_empty(
-            session, proposed, text=text, check_off_unit=False
+            session,
+            proposed,
+            overall=overall,
+            text=text,
+            check_off_unit=False,
         )
 
     # No request unit_ref: pending|STM active|cold auto-bind.
@@ -294,6 +313,7 @@ async def handle_tutor(
         return await _ready_loss_or_teach(
             session,
             active_ref,
+            overall=overall,
             text=text,
             had_active_session=True,
         )
@@ -303,5 +323,9 @@ async def handle_tutor(
         return _refuse(NO_READY)
 
     return await _teach_or_empty(
-        session, unit_ref, text=text, check_off_unit=False
+        session,
+        unit_ref,
+        overall=overall,
+        text=text,
+        check_off_unit=False,
     )

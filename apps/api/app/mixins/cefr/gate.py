@@ -1,4 +1,4 @@
-"""Overall CEFR gate for Ready Tutor (R2) — empty/invalid blocks; no silent seed."""
+"""Overall CEFR gate read — empty/invalid → None; no silent seed."""
 
 from __future__ import annotations
 

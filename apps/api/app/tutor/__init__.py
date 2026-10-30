@@ -1,4 +1,4 @@
-"""Ready Tutor domain — CEFR gate, lex-min SB bind, grounded teach (AD-3 patch only)."""
+"""Ready Tutor domain — shared CEFR/CG mixins, lex-min SB bind, grounded teach."""
 
 from app.tutor.handoff import TutorOutcome, handle_tutor
 

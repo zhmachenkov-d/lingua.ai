@@ -24,6 +24,7 @@ from app.llm.adapter import (
     LlmUnavailable,
     classify_turn,
 )
+from app.mixins.context_generator import LexiconUnavailable
 from app.review import handle_review_stub
 from app.router.session_mirror import upsert_session_mirror
 from app.schemas.ws import ErrorCode
@@ -71,6 +72,8 @@ ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "ws_already_open": (
         "Чат уже открыт в другой вкладке. Закройте его и попробуйте снова."
     ),
+    # EXPERIENCE ``dict-fail`` — required lexicon fetch (not silent CG skip).
+    "lexicon_unavailable": "Словарь временно недоступен. Попробуй позже.",
 }
 
 THREAD_ID: Final = str(MVP_LEARNER_ID)
@@ -408,6 +411,12 @@ async def handle_turn(
                         prior_tutor=prior_tutor,
                         request_unit_ref=unit_ref,
                     )
+            except LexiconUnavailable:
+                return TurnError(
+                    code="lexicon_unavailable",
+                    message=ERROR_MESSAGES["lexicon_unavailable"],
+                    turn_id=turn_id,
+                )
             except Exception:
                 # Tutor/DB path — not an LLM outage; reuse honest non-llm-down code.
                 logger.exception("tutor handoff failed")

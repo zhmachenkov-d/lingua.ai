@@ -16,6 +16,7 @@ ErrorCode = Literal[
     "invalid_turn_request",
     "checkpointer_write_failed",
     "ws_already_open",
+    "lexicon_unavailable",
 ]
 
 _SOT_NAME = "max-turn-text-length.json"
