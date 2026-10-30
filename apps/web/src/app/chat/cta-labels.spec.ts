@@ -2,15 +2,33 @@ import * as fc from 'fast-check';
 
 import { CTA_INTENT, mapCtaIds } from './cta-labels';
 
-const KNOWN = ['tutor', 'vocabulary', 'review', 'cefr'] as const;
+const KNOWN = [
+  'tutor',
+  'vocabulary',
+  'review',
+  'cefr',
+  'confirm_unit',
+  'decline_unit',
+] as const;
 
 describe('mapCtaIds', () => {
-  it('maps tutor / vocabulary / review / cefr to labels', () => {
-    expect(mapCtaIds(['tutor', 'vocabulary', 'review', 'cefr'])).toEqual([
+  it('maps tutor / vocabulary / review / cefr / confirm / decline to labels', () => {
+    expect(
+      mapCtaIds([
+        'tutor',
+        'vocabulary',
+        'review',
+        'cefr',
+        'confirm_unit',
+        'decline_unit',
+      ]),
+    ).toEqual([
       { id: 'tutor', label: 'Tutor' },
       { id: 'vocabulary', label: 'Vocabulary' },
       { id: 'review', label: 'Review' },
       { id: 'cefr', label: 'Указать CEFR' },
+      { id: 'confirm_unit', label: 'Сменить' },
+      { id: 'decline_unit', label: 'Оставить' },
     ]);
   });
 
@@ -41,5 +59,10 @@ describe('CTA_INTENT', () => {
     expect(CTA_INTENT.tutor).toBe('tutor_unit');
     expect(CTA_INTENT.vocabulary).toBe('vocab_lookup');
     expect(CTA_INTENT.review).toBe('review_daily');
+  });
+
+  it('maps unit-change confirm/decline to short-circuit tokens', () => {
+    expect(CTA_INTENT.confirm_unit).toBe('confirm_unit');
+    expect(CTA_INTENT.decline_unit).toBe('decline_unit');
   });
 });

@@ -26,6 +26,10 @@ import type { ChatBubble, CtaChip, CtaId, ServerEvent } from './chat.types';
  */
 export const TURN_IDLE_MS = 125_000;
 
+/** MVP Verify unit chrome refs (no list API). */
+export const CHROME_READY_SB_REF = 'ef4-beg-sb/1A';
+export const CHROME_WORKBOOK_REF = 'ef4-beg-wb/1A';
+
 @Component({
   selector: 'app-chat-shell',
   imports: [FormsModule],
@@ -45,6 +49,8 @@ export class ChatShell implements OnInit {
   protected readonly composerPlaceholder = COMPOSER_PLACEHOLDER;
   protected readonly sendLabel = SEND_LABEL;
   protected readonly retryLabel = RETRY_LABEL;
+  protected readonly chromeReadySbRef = CHROME_READY_SB_REF;
+  protected readonly chromeWorkbookRef = CHROME_WORKBOOK_REF;
 
   protected readonly draft = signal('');
   protected readonly bubbles = signal<ChatBubble[]>([]);
@@ -101,6 +107,19 @@ export class ChatShell implements OnInit {
     this.sendText(intent, { showOutbound: false });
   }
 
+  /** Minimal unit chrome — Ready SB / Workbook / clear (criterion 6 Verify). */
+  protected setUnitChrome(unitRef: string | null): void {
+    if (this.composerDisabled) {
+      return;
+    }
+    this.localError.set(null);
+    this.sendText('tutor_unit', {
+      showOutbound: false,
+      unitRef,
+      includeUnitRef: true,
+    });
+  }
+
   protected send(): void {
     if (this.composerDisabled) {
       return;
@@ -117,13 +136,25 @@ export class ChatShell implements OnInit {
     this.sendText(text, { showOutbound: text.length > 0, clearDraft: true });
   }
 
-  private sendText(text: string, options: { showOutbound: boolean; clearDraft?: boolean }): void {
+  private sendText(
+    text: string,
+    options: {
+      showOutbound: boolean;
+      clearDraft?: boolean;
+      unitRef?: string | null;
+      includeUnitRef?: boolean;
+    },
+  ): void {
     if (this.composerDisabled) {
       return;
     }
 
     const turnId = crypto.randomUUID();
-    const sent = this.ws.sendTurn(text, turnId);
+    const sent = this.ws.sendTurn(
+      text,
+      turnId,
+      options.includeUnitRef ? { unitRef: options.unitRef ?? null } : undefined,
+    );
     if (!sent) {
       this.clearInFlightAndShowBanner(NETWORK_FAIL);
       return;

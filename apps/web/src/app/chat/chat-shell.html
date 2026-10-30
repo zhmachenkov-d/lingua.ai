@@ -1,6 +1,32 @@
 <div class="shell">
   <header class="shell__header">
     <h1 class="shell__brand">{{ brandName }}</h1>
+    <div class="unit-chrome" role="group" aria-label="Unit">
+      <button
+        type="button"
+        class="unit-chrome__btn"
+        [disabled]="composerDisabled"
+        (click)="setUnitChrome(chromeReadySbRef)"
+      >
+        Ready SB
+      </button>
+      <button
+        type="button"
+        class="unit-chrome__btn"
+        [disabled]="composerDisabled"
+        (click)="setUnitChrome(chromeWorkbookRef)"
+      >
+        Workbook
+      </button>
+      <button
+        type="button"
+        class="unit-chrome__btn"
+        [disabled]="composerDisabled"
+        (click)="setUnitChrome(null)"
+      >
+        Clear
+      </button>
+    </div>
   </header>
 
   <div class="shell__thread" role="log" aria-live="polite" aria-relevant="additions">

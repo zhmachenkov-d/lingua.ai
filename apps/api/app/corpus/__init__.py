@@ -10,10 +10,18 @@ Returns ``None`` for unknown, non-Ready, or Ready-with-empty-join ``unit_ref``
 (not Tutor-usable). Read-only: never writes corpus tables and never re-embeds.
 """
 
-from app.corpus.query import ReadyChunk, ReadyUnitCorpus, get_ready_unit_chunks
+from app.corpus.query import (
+    ReadyChunk,
+    ReadyUnitCorpus,
+    UnitRow,
+    get_ready_unit_chunks,
+    get_unit_row,
+)
 
 __all__ = [
     "ReadyChunk",
     "ReadyUnitCorpus",
+    "UnitRow",
     "get_ready_unit_chunks",
+    "get_unit_row",
 ]

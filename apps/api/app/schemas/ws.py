@@ -71,6 +71,8 @@ class TurnRequest(BaseModel):
     kind: TurnRequestKind
     text: str = Field(max_length=MAX_TURN_TEXT_LENGTH)
     turn_id: Annotated[str | None, BeforeValidator(_coerce_optional_str)] = None
+    # Present (incl. JSON null) is authoritative chrome; omit = no chrome change.
+    unit_ref: str | None = None
 
 
 class TurnCompleteEvent(BaseModel):

@@ -27,9 +27,12 @@ IntentName = Literal["tutor_unit", "vocab_lookup", "review_daily"]
 ConfidenceBand = Literal["high", "low", "unknown", "tie"]
 
 # CTA chip ids and architecture intent tokens → high-confidence handoff intents.
+# confirm_unit / decline_unit stay on Tutor path; handoff reads the raw text.
 _CTA_INTENT_MAP: Final[dict[str, IntentName]] = {
     "tutor": "tutor_unit",
     "tutor_unit": "tutor_unit",
+    "confirm_unit": "tutor_unit",
+    "decline_unit": "tutor_unit",
     "vocabulary": "vocab_lookup",
     "vocab_lookup": "vocab_lookup",
     "review": "review_daily",

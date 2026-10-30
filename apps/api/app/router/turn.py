@@ -28,6 +28,8 @@ from app.review import handle_review_stub
 from app.router.session_mirror import upsert_session_mirror
 from app.schemas.ws import ErrorCode
 from app.tutor import handle_tutor
+from app.tutor.copy import SESSION_PERSIST_FAIL
+from app.tutor.handoff import UNSET
 from app.vocabulary import handle_vocabulary_stub
 
 logger = logging.getLogger(__name__)
@@ -41,10 +43,22 @@ CTA_MESSAGE: Final = (
 
 # Three-agent Router row (blank / unknown / low / tie / empty-rag / no-ready).
 AGENT_CTAS: Final = ("tutor", "vocabulary", "review")
-# Locked set for api↔web contract (includes gate-only ``cefr``).
-KNOWN_CTA_IDS: Final = ("tutor", "vocabulary", "review", "cefr")
+# Locked set for api↔web contract (includes gate-only ``cefr`` + unit-change).
+KNOWN_CTA_IDS: Final = (
+    "tutor",
+    "vocabulary",
+    "review",
+    "cefr",
+    "confirm_unit",
+    "decline_unit",
+)
 # Backward-compatible alias used by existing tests / contract readers.
 CTAS: Final = AGENT_CTAS
+
+# Other-agent CTA / intent tokens — leave Tutor session for those paths.
+_OTHER_AGENT_TOKENS: Final = frozenset(
+    {"vocabulary", "vocab_lookup", "review", "review_daily"}
+)
 
 ERROR_MESSAGES: Final[dict[ErrorCode, str]] = {
     "llm_misconfigured": (
@@ -293,10 +307,30 @@ async def _learner_db_session(
         await engine.dispose()
 
 
+def _prior_tutor_and_agent(
+    snap: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if snap is None:
+        return None, None
+    raw_agent = snap.get("active_agent")
+    agent = raw_agent if isinstance(raw_agent, str) else None
+    raw_tutor = snap.get("tutor")
+    tutor = dict(raw_tutor) if isinstance(raw_tutor, dict) else None
+    return tutor, agent
+
+
+def _is_tutor_session_turn(stripped: str, prior_agent: str | None) -> bool:
+    """Active Tutor continues (incl. free text / unit chrome) unless other-agent CTA."""
+    if prior_agent != "Tutor":
+        return False
+    return stripped.casefold() not in _OTHER_AGENT_TOKENS
+
+
 async def handle_turn(
     text: str,
     *,
     turn_id: str | None = None,
+    unit_ref: Any = UNSET,
     database_url: str | None = None,
     http_client: object | None = None,
     llm_client: AsyncOpenAI | None = None,
@@ -307,44 +341,73 @@ async def handle_turn(
     active_agent: str | None = None
     session_patch: dict[str, Any] = {}
     emit_token_delta = False
+    unit_switch_attempt = False
     message: str
     ctas: tuple[str, ...]
 
-    if not stripped:
+    prior_snap: dict[str, Any] | None = None
+    try:
+        prior_snap = await get_turn_snapshot(database_url=database_url)
+    except Exception:
+        logger.exception("prior snapshot read failed; continuing without STM")
+    prior_tutor, prior_agent = _prior_tutor_and_agent(prior_snap)
+
+    if not stripped and unit_ref is UNSET:
         message = BLANK_INPUT
         ctas = AGENT_CTAS
     else:
-        try:
-            result = await classify_turn(
-                stripped,
-                http_client=http_client,
-                client=llm_client,
-            )
-        except LlmMisconfigured:
-            return TurnError(
-                code="llm_misconfigured",
-                message=ERROR_MESSAGES["llm_misconfigured"],
-                turn_id=turn_id,
-            )
-        except LlmUnavailable:
-            return TurnError(
-                code="llm_unavailable",
-                message=ERROR_MESSAGES["llm_unavailable"],
-                turn_id=turn_id,
-            )
-        except Exception:
-            return TurnError(
-                code="llm_unavailable",
-                message=ERROR_MESSAGES["llm_unavailable"],
-                turn_id=turn_id,
-            )
-        used_backup = result.used_backup
-        handoff = result.handoff
+        run_tutor = False
+        handoff: str | None = None
+        band: str | None = None
 
-        if handoff == "tutor_unit":
+        if _is_tutor_session_turn(stripped or "tutor_unit", prior_agent) or (
+            unit_ref is not UNSET and prior_agent == "Tutor"
+        ):
+            run_tutor = True
+        elif not stripped and unit_ref is not UNSET:
+            # Chrome-only turn with empty text while idle — treat as tutor_unit.
+            run_tutor = True
+            stripped = "tutor_unit"
+        else:
+            try:
+                result = await classify_turn(
+                    stripped,
+                    http_client=http_client,
+                    client=llm_client,
+                )
+            except LlmMisconfigured:
+                return TurnError(
+                    code="llm_misconfigured",
+                    message=ERROR_MESSAGES["llm_misconfigured"],
+                    turn_id=turn_id,
+                )
+            except LlmUnavailable:
+                return TurnError(
+                    code="llm_unavailable",
+                    message=ERROR_MESSAGES["llm_unavailable"],
+                    turn_id=turn_id,
+                )
+            except Exception:
+                return TurnError(
+                    code="llm_unavailable",
+                    message=ERROR_MESSAGES["llm_unavailable"],
+                    turn_id=turn_id,
+                )
+            used_backup = result.used_backup
+            handoff = result.handoff
+            band = result.band
+            if handoff == "tutor_unit":
+                run_tutor = True
+
+        if run_tutor:
             try:
                 async with _learner_db_session(database_url) as session:
-                    outcome = await handle_tutor(session)
+                    outcome = await handle_tutor(
+                        session,
+                        text=stripped or "tutor_unit",
+                        prior_tutor=prior_tutor,
+                        request_unit_ref=unit_ref,
+                    )
             except Exception:
                 # Tutor/DB path — not an LLM outage; reuse honest non-llm-down code.
                 logger.exception("tutor handoff failed")
@@ -358,6 +421,7 @@ async def handle_turn(
             session_patch = dict(outcome.session_patch)
             active_agent = outcome.active_agent
             emit_token_delta = outcome.emit_token_delta
+            unit_switch_attempt = outcome.unit_switch_attempt
         elif handoff == "vocab_lookup":
             vocab = handle_vocabulary_stub()
             message = vocab.message
@@ -370,7 +434,7 @@ async def handle_turn(
             ctas = ()
             session_patch = dict(review.session_patch)
             active_agent = review.active_agent
-        elif result.band == "unknown":
+        elif band == "unknown":
             message = UNKNOWN_INTENT
             ctas = AGENT_CTAS
         else:
@@ -388,6 +452,17 @@ async def handle_turn(
             database_url=database_url,
         )
     except Exception:
+        if unit_switch_attempt:
+            # EXPERIENCE session-persist-fail: keep prior STM; block switch.
+            return TurnSuccess(
+                message=SESSION_PERSIST_FAIL,
+                ctas=AGENT_CTAS,
+                clarify=None,
+                backup_notice=backup_notice,
+                turn_id=turn_id,
+                last_user_text=stripped,
+                emit_token_delta=False,
+            )
         return TurnError(
             code="checkpointer_write_failed",
             message=ERROR_MESSAGES["checkpointer_write_failed"],

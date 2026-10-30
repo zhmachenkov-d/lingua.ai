@@ -5,6 +5,8 @@ const CTA_LABELS: Record<CtaId, string> = {
   vocabulary: 'Vocabulary',
   review: 'Review',
   cefr: 'Указать CEFR',
+  confirm_unit: 'Сменить',
+  decline_unit: 'Оставить',
 };
 
 /** CTA chip id → turn intent token (cefr navigates; not classified). */
@@ -12,6 +14,8 @@ export const CTA_INTENT: Record<Exclude<CtaId, 'cefr'>, string> = {
   tutor: 'tutor_unit',
   vocabulary: 'vocab_lookup',
   review: 'review_daily',
+  confirm_unit: 'confirm_unit',
+  decline_unit: 'decline_unit',
 };
 
 const KNOWN_IDS = new Set<string>(Object.keys(CTA_LABELS));
