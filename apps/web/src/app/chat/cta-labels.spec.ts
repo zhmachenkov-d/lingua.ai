@@ -1,4 +1,8 @@
+import * as fc from 'fast-check';
+
 import { CTA_INTENT, mapCtaIds } from './cta-labels';
+
+const KNOWN = ['tutor', 'vocabulary', 'review', 'cefr'] as const;
 
 describe('mapCtaIds', () => {
   it('maps tutor / vocabulary / review / cefr to labels', () => {
@@ -15,6 +19,20 @@ describe('mapCtaIds', () => {
       { id: 'tutor', label: 'Tutor' },
       { id: 'review', label: 'Review' },
     ]);
+  });
+
+  it('keeps only known ids in input order with table labels', () => {
+    fc.assert(
+      fc.property(fc.array(fc.string()), (ids) => {
+        const chips = mapCtaIds(ids);
+        const expected = ids.filter((id): id is (typeof KNOWN)[number] =>
+          (KNOWN as readonly string[]).includes(id),
+        );
+        return (
+          chips.length === expected.length && chips.every((chip, i) => chip.id === expected[i])
+        );
+      }),
+    );
   });
 });
 

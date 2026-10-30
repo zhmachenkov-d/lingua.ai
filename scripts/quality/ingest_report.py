@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 DEFAULT_METRICS_PATH = Path("_bmad-output/quality/metrics.jsonl")
 
@@ -36,11 +35,12 @@ def build_metrics_record(
     """Build one JSONL-ready record from a gate summary dict."""
     failed = list(summary.get("failed_layers") or [])
     return {
-        "ts": summary.get("ts")
-        or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "ts": summary.get("ts") or datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "sha": summary.get("sha"),
         "base": summary.get("base"),
-        "pr": pr if pr is not None else summary.get("pr") or os.environ.get("QUALITY_PR"),
+        "pr": pr
+        if pr is not None
+        else summary.get("pr") or os.environ.get("QUALITY_PR"),
         "ticket": ticket
         if ticket is not None
         else summary.get("ticket") or os.environ.get("QUALITY_TICKET"),
@@ -48,6 +48,7 @@ def build_metrics_record(
         if agent_run_id is not None
         else summary.get("agent_run_id") or os.environ.get("QUALITY_AGENT_RUN_ID"),
         "antipattern": _layer_counts(summary, "ast-grep"),
+        "assertions": _layer_counts(summary, "assertion-guard"),
         "complexity": _layer_counts(summary, "ast-metrics"),
         "impact": _layer_counts(summary, "revet"),
         "verdict": summary.get("verdict"),

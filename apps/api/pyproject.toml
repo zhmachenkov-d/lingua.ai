@@ -25,6 +25,7 @@ lingua-corpus = { path = "../../packages/lingua_corpus" }
 [project.optional-dependencies]
 dev = [
   "httpx>=0.28.0",
+  "hypothesis>=6.100.0",
   "pytest>=8.0.0",
   "ruff>=0.11.0",
   "mypy>=1.15.0",

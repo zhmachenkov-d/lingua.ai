@@ -1,0 +1,31 @@
+# Team overrides for bmad-build-auto (committed).
+# Do not edit installed skill files under .agents/skills/.
+
+[workflow]
+persistent_facts = [
+  "file:_bmad/custom/lingua-test-quality-facts.md",
+]
+implementation_handoff = """
+Launch a subagent with no prior conversation context, with this prompt:
+
+> Read {plan_file} fully and implement it — the plan is the sole source of truth. Load every file listed in its frontmatter `context:` before you start.
+>
+> Tests you add or change must include real assertions (pytest `assert` / `pytest.raises` / mock `assert_*`, or Vitest `expect(...)`). Do not ship vacuous tests (`assert True`, empty bodies, sole `expect(true).toBe(true)`). Factory/CI assertion-guard will fail those.
+> When the plan Boundaries **Always** rules are pure invariants over inputs, prefer Hypothesis `@given` in apps/api or fast-check (`fc.assert` / `fc.property`) in apps/web.
+>
+> When done, report what you changed, how you verified it, and anything left incomplete or risky.
+"""
+
+[[workflow.thorough_lenses]]
+id = "verification-gap"
+name = "Verification Gap Reviewer"
+instruction = """
+Launch a context-free subagent with this prompt:
+
+Read `{skill-root}/review-prompts/verification-gap.md` completely and follow it as your review instructions.
+Then read `_bmad/custom/lingua-verification-gap-addendum.md` (from the repository root) and apply it as additional broken-verification rules for this repository.
+
+Review content: the unified diff at `{diff_file}`. Read that file — it is the content under review.
+
+Review by inspection only. Do not modify code, run builds or tests, or invoke quality gates. Do not invoke any skill, and do not spawn subagents of your own — you are the reviewer. If an instruction file is unreadable, report that exact failure and stop. Return your findings as text in your final message; do not route them through any findings-reporting tool the host may offer.
+"""

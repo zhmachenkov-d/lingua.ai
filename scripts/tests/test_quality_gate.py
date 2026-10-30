@@ -13,13 +13,15 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from quality.ingest_report import append_metrics, build_metrics_record  # noqa: E402
-from quality_gate import (  # noqa: E402
+import assertion_guard as ag
+from quality.ingest_report import append_metrics, build_metrics_record
+from quality_gate import (
     EXIT_FAIL,
     EXIT_MISSING_TOOLS,
     EXIT_OK,
     _count_ast_grep_findings,
     build_summary,
+    run_assertion_guard,
     run_gate,
 )
 
@@ -66,6 +68,7 @@ class SummaryVerdictTests(unittest.TestCase):
         summary = build_summary(
             [
                 _layer("ast-grep", hard=True, status="pass"),
+                _layer("assertion-guard", hard=True, status="pass"),
                 _layer("ast-metrics", hard=False, status="soft_fail", exit_code=1),
                 _layer("revet", hard=False, status="soft_fail", exit_code=1),
             ],
@@ -87,6 +90,7 @@ class SummaryVerdictTests(unittest.TestCase):
                     error_count=2,
                     finding_count=2,
                 ),
+                _layer("assertion-guard", hard=True, status="pass"),
                 _layer("ast-metrics", hard=False, status="pass"),
                 _layer("revet", hard=False, status="pass"),
             ],
@@ -97,10 +101,33 @@ class SummaryVerdictTests(unittest.TestCase):
         self.assertEqual(summary["verdict"], "fail")
         self.assertEqual(summary["failed_layers"], ["ast-grep"])
 
+    def test_fail_when_assertion_guard_fails(self) -> None:
+        summary = build_summary(
+            [
+                _layer("ast-grep", hard=True, status="pass"),
+                _layer(
+                    "assertion-guard",
+                    hard=True,
+                    status="fail",
+                    exit_code=1,
+                    error_count=1,
+                    finding_count=1,
+                ),
+                _layer("ast-metrics", hard=False, status="pass"),
+                _layer("revet", hard=False, status="pass"),
+            ],
+            base="origin/main",
+            sha="abc",
+            out_dir=Path("/tmp/q"),
+        )
+        self.assertEqual(summary["verdict"], "fail")
+        self.assertEqual(summary["failed_layers"], ["assertion-guard"])
+
     def test_strict_metrics_can_fail_verdict(self) -> None:
         summary = build_summary(
             [
                 _layer("ast-grep", hard=True, status="pass"),
+                _layer("assertion-guard", hard=True, status="pass"),
                 _layer("ast-metrics", hard=True, status="fail", exit_code=1),
                 _layer("revet", hard=False, status="pass"),
             ],
@@ -122,6 +149,7 @@ class IngestReportTests(unittest.TestCase):
             "failed_layers": [],
             "layers": {
                 "ast-grep": _layer("ast-grep", hard=True, status="pass"),
+                "assertion-guard": _layer("assertion-guard", hard=True, status="pass"),
                 "ast-metrics": _layer("ast-metrics", hard=False, status="pass"),
                 "revet": _layer("revet", hard=False, status="pass"),
             },
@@ -134,6 +162,8 @@ class IngestReportTests(unittest.TestCase):
         self.assertEqual(record["pr"], "42")
         self.assertEqual(record["verdict"], "pass")
         self.assertEqual(record["antipattern"]["status"], "pass")
+        self.assertEqual(record["assertions"]["status"], "pass")
+        self.assertTrue(record["assertions"]["hard"])
         self.assertEqual(record["complexity"]["status"], "pass")
         self.assertEqual(record["impact"]["status"], "pass")
 
@@ -165,11 +195,46 @@ class IngestReportTests(unittest.TestCase):
             self.assertEqual(row["failed_layers"], ["ast-grep"])
 
 
+class AssertionGuardLayerTests(unittest.TestCase):
+    def test_run_assertion_guard_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            fake = ag.GuardReport(base="HEAD")
+            fake.scanned_files = ["tests/test_ok.py"]
+            fake.finalize()
+            with mock.patch.object(ag, "run_guard", return_value=fake) as run:
+                layer = run_assertion_guard(root, out, base="HEAD")
+            run.assert_called_once()
+            self.assertEqual(layer["name"], "assertion-guard")
+            self.assertTrue(layer["hard"])
+            self.assertEqual(layer["status"], "pass")
+            self.assertEqual(layer["finding_count"], 0)
+
+    def test_run_assertion_guard_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            out.mkdir()
+            fake = ag.GuardReport(base="HEAD")
+            fake.findings = [
+                ag.Finding("tests/t.py", "test_x", 1, "only vacuous assertions"),
+            ]
+            fake.finalize()
+            with mock.patch.object(ag, "run_guard", return_value=fake):
+                layer = run_assertion_guard(root, out, base="HEAD")
+            self.assertEqual(layer["status"], "fail")
+            self.assertEqual(layer["error_count"], 1)
+
+
 class RunGateMissingToolsTests(unittest.TestCase):
     def test_missing_binaries_exit_2(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            with mock.patch("quality_gate._require_binaries", return_value=["ast-grep"]):
+            with mock.patch(
+                "quality_gate._require_binaries", return_value=["ast-grep"]
+            ):
                 summary, code = run_gate(
                     project_root=root,
                     base="origin/main",
@@ -194,6 +259,10 @@ class RunGateMockedLayersTests(unittest.TestCase):
                     ),
                 ),
                 mock.patch(
+                    "quality_gate.run_assertion_guard",
+                    return_value=_layer("assertion-guard", hard=True, status="pass"),
+                ),
+                mock.patch(
                     "quality_gate.run_ast_metrics",
                     return_value=_layer("ast-metrics", hard=False, status="pass"),
                 ),
@@ -212,6 +281,46 @@ class RunGateMockedLayersTests(unittest.TestCase):
             self.assertEqual(summary["verdict"], "fail")
             self.assertTrue((out / "summary.json").is_file())
 
+    def test_assertion_guard_hard_fail_exit_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = root / "out"
+            with (
+                mock.patch("quality_gate._require_binaries", return_value=[]),
+                mock.patch(
+                    "quality_gate.run_ast_grep",
+                    return_value=_layer("ast-grep", hard=True, status="pass"),
+                ),
+                mock.patch(
+                    "quality_gate.run_assertion_guard",
+                    return_value=_layer(
+                        "assertion-guard",
+                        hard=True,
+                        status="fail",
+                        exit_code=1,
+                        finding_count=2,
+                        error_count=2,
+                    ),
+                ),
+                mock.patch(
+                    "quality_gate.run_ast_metrics",
+                    return_value=_layer("ast-metrics", hard=False, status="pass"),
+                ),
+                mock.patch(
+                    "quality_gate.run_revet",
+                    return_value=_layer("revet", hard=False, status="pass"),
+                ),
+            ):
+                summary, code = run_gate(
+                    project_root=root,
+                    base="origin/main",
+                    out_dir=out,
+                    skip_ingest=True,
+                )
+            self.assertEqual(code, EXIT_FAIL)
+            self.assertEqual(summary["verdict"], "fail")
+            self.assertIn("assertion-guard", summary["failed_layers"])
+
     def test_all_soft_pass_exit_0(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -221,6 +330,10 @@ class RunGateMockedLayersTests(unittest.TestCase):
                 mock.patch(
                     "quality_gate.run_ast_grep",
                     return_value=_layer("ast-grep", hard=True, status="pass"),
+                ),
+                mock.patch(
+                    "quality_gate.run_assertion_guard",
+                    return_value=_layer("assertion-guard", hard=True, status="pass"),
                 ),
                 mock.patch(
                     "quality_gate.run_ast_metrics",
