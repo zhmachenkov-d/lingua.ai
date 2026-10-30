@@ -117,10 +117,7 @@ export class ChatShell implements OnInit {
     this.sendText(text, { showOutbound: text.length > 0, clearDraft: true });
   }
 
-  private sendText(
-    text: string,
-    options: { showOutbound: boolean; clearDraft?: boolean },
-  ): void {
+  private sendText(text: string, options: { showOutbound: boolean; clearDraft?: boolean }): void {
     if (this.composerDisabled) {
       return;
     }

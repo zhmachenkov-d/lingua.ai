@@ -32,9 +32,7 @@ export class CefrE1 implements OnInit {
 
   private async loadExistingOverall(): Promise<void> {
     try {
-      const map = await firstValueFrom(
-        this.http.get<Record<string, string>>('/api/profile/cefr'),
-      );
+      const map = await firstValueFrom(this.http.get<Record<string, string>>('/api/profile/cefr'));
       if (isCefrLevel(map['overall'])) {
         this.overall.set(map['overall']);
       }

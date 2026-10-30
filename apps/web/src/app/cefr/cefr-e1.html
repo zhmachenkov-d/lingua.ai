@@ -2,7 +2,9 @@
   <header class="e1__header">
     <p class="e1__brand">Lingua AI</p>
     <h1 id="e1-title" class="e1__title">Общий уровень CEFR</h1>
-    <p class="e1__lead">Укажи общий уровень, чтобы начать Ready Tutor. Навыки можно добавить позже.</p>
+    <p class="e1__lead">
+      Укажи общий уровень, чтобы начать Ready Tutor. Навыки можно добавить позже.
+    </p>
   </header>
 
   <form class="e1__form" (submit)="onSubmit($event)">
@@ -27,9 +29,7 @@
     }
 
     <div class="e1__actions">
-      <button type="submit" class="e1__save" [disabled]="!overall() || saving()">
-        Сохранить
-      </button>
+      <button type="submit" class="e1__save" [disabled]="!overall() || saving()">Сохранить</button>
       <a routerLink="/" class="e1__back">Назад в чат</a>
     </div>
   </form>
