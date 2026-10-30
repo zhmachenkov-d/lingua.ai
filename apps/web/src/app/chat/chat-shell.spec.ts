@@ -2,7 +2,12 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
 import { provideRouter, Router } from '@angular/router';
 
-import { ChatShell, TURN_IDLE_MS } from './chat-shell';
+import {
+  ChatShell,
+  CHROME_READY_SB_REF,
+  CHROME_WORKBOOK_REF,
+  TURN_IDLE_MS,
+} from './chat-shell';
 import {
   MAX_MESSAGE_LENGTH,
   NETWORK_FAIL,
@@ -117,6 +122,78 @@ describe('ChatShell', () => {
     expect(frame.text).toBe('tutor_unit');
     expect(shell['inFlight']()).toBe(true);
     expect(fixture.nativeElement.textContent).not.toContain('tutor_unit');
+  });
+
+  it('unit chrome sends tutor_unit with unit_ref (Ready SB / Workbook / clear)', () => {
+    const chromeBtns = fixture.debugElement.queryAll(By.css('.unit-chrome__btn'));
+    expect(chromeBtns).toHaveLength(3);
+
+    chromeBtns[0]!.triggerEventHandler('click');
+    fixture.detectChanges();
+    expect(JSON.parse(latestSocket!.sent[0]!)).toMatchObject({
+      kind: 'turn_request',
+      text: 'tutor_unit',
+      unit_ref: CHROME_READY_SB_REF,
+    });
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'ok',
+      ctas: [],
+      clarify: null,
+      backup_notice: null,
+      turn_id: JSON.parse(latestSocket!.sent[0]!).turn_id,
+    });
+    fixture.detectChanges();
+
+    chromeBtns[1]!.triggerEventHandler('click');
+    fixture.detectChanges();
+    expect(JSON.parse(latestSocket!.sent[1]!)).toMatchObject({
+      unit_ref: CHROME_WORKBOOK_REF,
+    });
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'ok',
+      ctas: [],
+      clarify: null,
+      backup_notice: null,
+      turn_id: JSON.parse(latestSocket!.sent[1]!).turn_id,
+    });
+    fixture.detectChanges();
+
+    chromeBtns[2]!.triggerEventHandler('click');
+    fixture.detectChanges();
+    expect(JSON.parse(latestSocket!.sent[2]!)).toMatchObject({
+      unit_ref: null,
+    });
+  });
+
+  it('renders confirm/decline unit CTAs with Сменить / Оставить and sends tokens', () => {
+    const shell = fixture.componentInstance;
+    shell['draft'].set('x');
+    shell['send']();
+    const frame = JSON.parse(latestSocket!.sent[0]!);
+
+    latestSocket!.simulateMessage({
+      kind: 'turn_complete',
+      message: 'Сменить unit? Текущий ход Tutor будет завершён.',
+      ctas: ['confirm_unit', 'decline_unit'],
+      clarify: null,
+      backup_notice: null,
+      turn_id: frame.turn_id,
+    });
+    fixture.detectChanges();
+
+    const text = fixture.nativeElement.textContent as string;
+    expect(text).toContain('Сменить');
+    expect(text).toContain('Оставить');
+
+    const ctaButtons = fixture.debugElement.queryAll(By.css('.cta'));
+    expect(ctaButtons).toHaveLength(2);
+    ctaButtons[0]!.triggerEventHandler('click');
+    fixture.detectChanges();
+    expect(JSON.parse(latestSocket!.sent[1]!).text).toBe('confirm_unit');
   });
 
   it('navigates to /cefr on cefr CTA click without WS turn', async () => {

@@ -38,6 +38,29 @@ class ReadyUnitCorpus:
     chunks: list[ReadyChunk]
 
 
+@dataclass(frozen=True, slots=True)
+class UnitRow:
+    """Corpus row for classify — distinct from Ready-chunk absence (``None``)."""
+
+    unit_ref: str
+    textbook_id: str
+    status: str
+
+
+async def get_unit_row(session: AsyncSession, unit_ref: str) -> UnitRow | None:
+    """Return the textbook_unit row for ``unit_ref``, or ``None`` if unknown."""
+    unit = await session.scalar(
+        select(TextbookUnit).where(TextbookUnit.unit_ref == unit_ref)
+    )
+    if unit is None:
+        return None
+    return UnitRow(
+        unit_ref=unit.unit_ref,
+        textbook_id=unit.textbook_id,
+        status=unit.status,
+    )
+
+
 async def get_ready_unit_chunks(
     session: AsyncSession,
     unit_ref: str,
@@ -46,7 +69,8 @@ async def get_ready_unit_chunks(
 
     Read-only against ``textbook_unit`` / ``chunk`` / ``embedding``. Does not
     raise for unknown, non-Ready, or Ready-with-empty-join refs — callers
-    treat ``None`` as absence.
+    treat ``None`` as absence. Non-Ready / missing rows are also ``None``;
+    use ``get_unit_row`` when classify must distinguish those from empty-rag.
     """
     unit = await session.scalar(
         select(TextbookUnit).where(TextbookUnit.unit_ref == unit_ref)

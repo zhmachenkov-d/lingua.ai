@@ -319,6 +319,8 @@ def test_invalid_inbound_does_not_call_llm(client: TestClient) -> None:
 
 
 def test_parse_inbound_uses_turn_request_model() -> None:
+    from app.tutor.handoff import UNSET
+
     with patch.object(
         ws_mod.TurnRequest,
         "model_validate",
@@ -328,7 +330,17 @@ def test_parse_inbound_uses_turn_request_model() -> None:
             '{"kind":"turn_request","text":"hi","turn_id":"t"}'
         )
     validate.assert_called_once()
-    assert result == ("hi", "t")
+    assert result == ("hi", "t", UNSET)
+
+    with_ref = ws_mod._parse_inbound(
+        '{"kind":"turn_request","text":"hi","turn_id":"t","unit_ref":"ef4-beg-sb/1A"}'
+    )
+    assert with_ref == ("hi", "t", "ef4-beg-sb/1A")
+
+    cleared = ws_mod._parse_inbound(
+        '{"kind":"turn_request","text":"hi","turn_id":"t","unit_ref":null}'
+    )
+    assert cleared == ("hi", "t", None)
 
 
 def test_over_limit_text_rejected_without_llm(client: TestClient) -> None:

@@ -21,6 +21,8 @@ export interface TurnRequest {
   kind: TurnRequestKind;
   text: string;
   turn_id?: string;
+  /** Present (incl. null clear) is chrome; omit = no unit change. */
+  unit_ref?: string | null;
 }
 
 export interface TurnCompleteEvent {
@@ -55,7 +57,7 @@ export interface ChatBubble {
   text: string;
 }
 
-export type CtaId = 'tutor' | 'vocabulary' | 'review' | 'cefr';
+export type CtaId = 'tutor' | 'vocabulary' | 'review' | 'cefr' | 'confirm_unit' | 'decline_unit';
 
 export interface CtaChip {
   id: CtaId;

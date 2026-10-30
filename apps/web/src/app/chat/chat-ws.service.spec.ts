@@ -113,6 +113,28 @@ describe('ChatWsService', () => {
     });
   });
 
+  it('includes unit_ref when chrome options are passed (incl. null clear)', () => {
+    const service = TestBed.inject(ChatWsService);
+    service.connect();
+    latestSocket!.simulateOpen();
+
+    expect(service.sendTurn('tutor_unit', 't1', { unitRef: 'ef4-beg-sb/1A' })).toBe(true);
+    expect(JSON.parse(latestSocket!.sent[0]!)).toEqual({
+      kind: 'turn_request',
+      text: 'tutor_unit',
+      turn_id: 't1',
+      unit_ref: 'ef4-beg-sb/1A',
+    });
+
+    expect(service.sendTurn('tutor_unit', 't2', { unitRef: null })).toBe(true);
+    expect(JSON.parse(latestSocket!.sent[1]!)).toEqual({
+      kind: 'turn_request',
+      text: 'tutor_unit',
+      turn_id: 't2',
+      unit_ref: null,
+    });
+  });
+
   it('marks failed on abnormal close (connect fail / outage)', () => {
     const service = TestBed.inject(ChatWsService);
     service.connect();

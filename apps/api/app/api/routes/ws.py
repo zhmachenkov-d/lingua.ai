@@ -113,8 +113,15 @@ def _invalid_error(*, turn_id: str | None) -> dict[str, Any]:
     ).to_wire()
 
 
-def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
-    """Return (text, turn_id) or an error wire payload."""
+def _parse_inbound(
+    raw_text: str,
+) -> tuple[str, str | None, object] | dict[str, Any]:
+    """Return (text, turn_id, unit_ref_or_UNSET) or an error wire payload.
+
+    ``unit_ref`` is UNSET when omitted from JSON; JSON null / string when present.
+    """
+    from app.tutor.handoff import UNSET
+
     turn_id: str | None = None
     try:
         data = json.loads(raw_text)
@@ -127,7 +134,10 @@ def _parse_inbound(raw_text: str) -> tuple[str, str | None] | dict[str, Any]:
         req = TurnRequest.model_validate(data)
     except ValidationError:
         return _invalid_error(turn_id=turn_id)
-    return req.text, req.turn_id
+    unit_ref: object = UNSET
+    if "unit_ref" in req.model_fields_set:
+        unit_ref = req.unit_ref
+    return req.text, req.turn_id, unit_ref
 
 
 def _success_wire(result: TurnSuccess) -> dict[str, Any]:
@@ -254,9 +264,11 @@ async def learner_ws(websocket: WebSocket) -> None:
                 await websocket.send_json(parsed)
                 continue
 
-            text, turn_id = parsed
+            text, turn_id, unit_ref = parsed
             in_flight_turn_id = turn_id
-            in_flight = asyncio.create_task(handle_turn(text, turn_id=turn_id))
+            in_flight = asyncio.create_task(
+                handle_turn(text, turn_id=turn_id, unit_ref=unit_ref)
+            )
     except WebSocketDisconnect:
         cleanup_reason = "disconnect"
     finally:

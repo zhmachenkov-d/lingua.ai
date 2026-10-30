@@ -115,7 +115,15 @@ export class ChatWsService {
     this.connect();
   }
 
-  sendTurn(text: string, turnId?: string): boolean {
+  /**
+   * Send a turn. Pass `unitRef` (incl. `null` clear) only when unit chrome changes;
+   * omit the option entirely when the request has no chrome change.
+   */
+  sendTurn(
+    text: string,
+    turnId?: string,
+    options?: { unitRef?: string | null },
+  ): boolean {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return false;
@@ -123,6 +131,9 @@ export class ChatWsService {
     const payload: TurnRequest = { kind: 'turn_request', text };
     if (turnId !== undefined) {
       payload.turn_id = turnId;
+    }
+    if (options !== undefined && 'unitRef' in options) {
+      payload.unit_ref = options.unitRef ?? null;
     }
     socket.send(JSON.stringify(payload));
     return true;

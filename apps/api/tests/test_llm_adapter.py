@@ -72,6 +72,8 @@ def test_cta_tutor_short_circuits_without_llm() -> None:
         ("vocab_lookup", "vocab_lookup"),
         ("review", "review_daily"),
         ("review_daily", "review_daily"),
+        ("confirm_unit", "tutor_unit"),
+        ("decline_unit", "tutor_unit"),
     ],
 )
 def test_cta_tokens_map_high_confidence(token: str, intent: str) -> None:
