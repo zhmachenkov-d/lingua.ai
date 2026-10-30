@@ -1,20 +1,10 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "npm",
-  "reporters": [
-    "html",
-    "json",
-    "clear-text",
-    "progress"
-  ],
+  "reporters": ["html", "json", "clear-text", "progress"],
   "testRunner": "vitest",
-  "plugins": [
-    "@stryker-mutator/vitest-runner",
-    "@stryker-mutator/typescript-checker"
-  ],
-  "checkers": [
-    "typescript"
-  ],
+  "plugins": ["@stryker-mutator/vitest-runner", "@stryker-mutator/typescript-checker"],
+  "checkers": ["typescript"],
   "tsconfigFile": "tsconfig.app.json",
   "vitest": {
     "configFile": "vitest.stryker.config.ts",
@@ -22,10 +12,7 @@
   },
   "coverageAnalysis": "perTest",
   "buildCommand": "ng test --dump-virtual-files --watch=false",
-  "mutate": [
-    "src/app/**/*.ts",
-    "!src/app/**/*.spec.ts"
-  ],
+  "mutate": ["src/app/**/*.ts", "!src/app/**/*.spec.ts"],
   "thresholds": {
     "high": 80,
     "low": 60,

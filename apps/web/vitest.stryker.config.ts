@@ -39,13 +39,7 @@ export default defineConfig({
         },
         resolve: {
           mainFields: ['es2020', 'module', 'main'],
-          conditions: [
-            'es2015',
-            'es2020',
-            'module',
-            'node',
-            'development|production',
-          ],
+          conditions: ['es2015', 'es2020', 'module', 'node', 'development|production'],
         },
         plugins: [
           {
