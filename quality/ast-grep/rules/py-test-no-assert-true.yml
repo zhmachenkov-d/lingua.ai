@@ -1,0 +1,15 @@
+id: py-test-no-assert-true
+language: Python
+severity: error
+message: Vacuous assert True in a test; use a real assertion.
+note: |
+  `assert True` always passes and does not verify behavior. Prefer a meaningful
+  assert, pytest.raises, or a mock assert_* call. Absence of any assert is
+  enforced separately by scripts/assertion_guard.py on changed test files.
+files:
+  - "**/tests/**/*.py"
+  - "**/*_test.py"
+  - "**/test_*.py"
+rule:
+  kind: assert_statement
+  pattern: assert True

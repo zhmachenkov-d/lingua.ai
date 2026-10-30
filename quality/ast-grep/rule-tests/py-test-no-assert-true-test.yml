@@ -1,0 +1,18 @@
+id: py-test-no-assert-true
+valid:
+  - |
+    def test_ok():
+        assert value == 1
+  - |
+    def test_truthy():
+        assert result
+  - |
+    def test_raises():
+        with pytest.raises(ValueError):
+            boom()
+invalid:
+  - |
+    def test_vacuous():
+        assert True
+  - |
+    assert True

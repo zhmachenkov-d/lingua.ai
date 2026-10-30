@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Run layered AST quality checks for CI and BMAD factory verify.
 
-Hard layer (always gating): ast-grep antipatterns (severity error).
+Hard layers (always gating): ast-grep antipatterns (severity error),
+assertion-guard on changed test files.
 Soft layers (report-only unless --strict-*): AST Metrics, Revet.
 """
 
@@ -21,6 +22,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
+import assertion_guard  # noqa: E402
 from quality.ingest_report import append_metrics  # noqa: E402
 
 REQUIRED_BINARIES = ("ast-grep", "ast-metrics", "revet")
@@ -164,6 +166,33 @@ def run_ast_grep(project_root: Path, out_dir: Path) -> dict[str, Any]:
         "report": str(raw_path.relative_to(project_root))
         if raw_path.is_relative_to(project_root)
         else str(raw_path),
+    }
+
+
+def run_assertion_guard(
+    project_root: Path,
+    out_dir: Path,
+    *,
+    base: str,
+) -> dict[str, Any]:
+    report_path = out_dir / "assertion-guard.json"
+    report = assertion_guard.run_guard(
+        project_root=project_root,
+        base=base,
+        out_path=report_path,
+    )
+    hard_fail = report.status == "fail"
+    return {
+        "name": "assertion-guard",
+        "hard": True,
+        "status": "fail" if hard_fail else "pass",
+        "exit_code": assertion_guard.EXIT_FAIL if hard_fail else assertion_guard.EXIT_OK,
+        "finding_count": report.finding_count,
+        "error_count": report.finding_count if hard_fail else 0,
+        "warning_count": 0,
+        "report": str(report_path.relative_to(project_root))
+        if report_path.is_relative_to(project_root)
+        else str(report_path),
     }
 
 
@@ -323,6 +352,7 @@ def run_gate(
     out_dir.mkdir(parents=True, exist_ok=True)
     layers = [
         run_ast_grep(project_root, out_dir),
+        run_assertion_guard(project_root, out_dir, base=base),
         run_ast_metrics(
             project_root, out_dir, base=base, strict=strict_metrics
         ),
