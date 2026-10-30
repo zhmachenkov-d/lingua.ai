@@ -12,12 +12,14 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .agent import cancel_active_agent
+from .agent import attach_agent_run_log, cancel_active_agent, detach_agent_run_log
 from .constants import (
     DEFAULT_MODEL_ID,
     SHUTDOWN_COMPLETED,
     FactoryHalt,
+    attach_run_log,
     configure_logging,
+    detach_run_log,
     log,
 )
 from .deferred import continue_deferred
@@ -62,6 +64,7 @@ from .run_state import (
     find_resumable_run,
     load_run,
     pause_run,
+    run_log_path,
     save_run,
 )
 from .status_cmd import cmd_status
@@ -762,6 +765,9 @@ def _run_with_session(
         print(f"run_id: {run_state.run_id}", file=sys.stderr)
         return _finish_report(report, as_json=args.json)
 
+    log_path = run_log_path(project_root, run_state.run_id)
+    attach_run_log(log_path)
+    attach_agent_run_log(log_path)
     try:
         try:
             body()
@@ -787,6 +793,8 @@ def _run_with_session(
     finally:
         session.restore_signals()
         session.release_locks()
+        detach_agent_run_log()
+        detach_run_log()
 
 
 def cmd_build(args: argparse.Namespace) -> int:
