@@ -37,8 +37,8 @@ from app.tutor.copy import (
 )
 from app.tutor.handoff import (
     CEFR_GATE_CTAS,
-    UNSET,
     UNIT_CHANGE_CTAS,
+    UNSET,
     handle_tutor,
     is_off_unit_text,
     pick_refuse_key,
@@ -212,14 +212,20 @@ def test_tutor_happy_lex_min_bind_and_grounded_teach(migrated_url: str) -> None:
         engine = create_async_engine(to_sqlalchemy_url(migrated_url))
         factory = async_sessionmaker(engine, expire_on_commit=False)
         try:
-            async with factory() as session:
-                outcome = await handle_tutor(session)
+            with patch(
+                "app.tutor.teach.fetch_lemma_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ):
+                async with factory() as session:
+                    outcome = await handle_tutor(session)
         finally:
             await engine.dispose()
         assert outcome.active_agent == "Tutor"
         assert outcome.session_patch == {"tutor": {"active_unit_ref": early}}
         assert early in outcome.message
         assert "Hello from Ready SB." in outcome.message
+        assert "[CEFR target: B1–B2]" in outcome.message
         assert outcome.emit_token_delta is True
         assert outcome.ctas == ()
 
@@ -350,48 +356,53 @@ def test_tutor_unit_change_confirm_decline(migrated_url: str) -> None:
         engine = create_async_engine(to_sqlalchemy_url(migrated_url))
         factory = async_sessionmaker(engine, expire_on_commit=False)
         try:
-            async with factory() as session:
-                ask = await handle_tutor(
-                    session,
-                    prior_tutor={"active_unit_ref": a},
-                    request_unit_ref=b,
-                )
-                assert ask.message == UNIT_CHANGE_CONFIRM
-                assert ask.ctas == UNIT_CHANGE_CTAS
-                assert ask.session_patch == {
-                    "tutor": {"active_unit_ref": a, "pending_unit_ref": b}
-                }
-                assert ask.emit_token_delta is False
+            with patch(
+                "app.tutor.teach.fetch_lemma_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ):
+                async with factory() as session:
+                    ask = await handle_tutor(
+                        session,
+                        prior_tutor={"active_unit_ref": a},
+                        request_unit_ref=b,
+                    )
+                    assert ask.message == UNIT_CHANGE_CONFIRM
+                    assert ask.ctas == UNIT_CHANGE_CTAS
+                    assert ask.session_patch == {
+                        "tutor": {"active_unit_ref": a, "pending_unit_ref": b}
+                    }
+                    assert ask.emit_token_delta is False
 
-                declined = await handle_tutor(
-                    session,
-                    text="decline_unit",
-                    prior_tutor={
-                        "active_unit_ref": a,
-                        "pending_unit_ref": b,
-                    },
-                )
-                assert a in declined.message
-                assert "Alpha chunk hello" in declined.message
-                assert declined.session_patch == {
-                    "tutor": {"active_unit_ref": a}
-                }
-                assert "pending_unit_ref" not in declined.session_patch["tutor"]
+                    declined = await handle_tutor(
+                        session,
+                        text="decline_unit",
+                        prior_tutor={
+                            "active_unit_ref": a,
+                            "pending_unit_ref": b,
+                        },
+                    )
+                    assert a in declined.message
+                    assert "Alpha chunk hello" in declined.message
+                    assert declined.session_patch == {
+                        "tutor": {"active_unit_ref": a}
+                    }
+                    assert "pending_unit_ref" not in declined.session_patch["tutor"]
 
-                confirmed = await handle_tutor(
-                    session,
-                    text="confirm_unit",
-                    prior_tutor={
-                        "active_unit_ref": a,
-                        "pending_unit_ref": b,
-                    },
-                )
-                assert b in confirmed.message
-                assert "Beta chunk world" in confirmed.message
-                assert confirmed.session_patch == {
-                    "tutor": {"active_unit_ref": b}
-                }
-                assert confirmed.emit_token_delta is True
+                    confirmed = await handle_tutor(
+                        session,
+                        text="confirm_unit",
+                        prior_tutor={
+                            "active_unit_ref": a,
+                            "pending_unit_ref": b,
+                        },
+                    )
+                    assert b in confirmed.message
+                    assert "Beta chunk world" in confirmed.message
+                    assert confirmed.session_patch == {
+                        "tutor": {"active_unit_ref": b}
+                    }
+                    assert confirmed.emit_token_delta is True
         finally:
             await engine.dispose()
 
@@ -435,10 +446,16 @@ def test_handle_turn_tutor_cta_persists_patch(migrated_url: str) -> None:
     _seed_profile(migrated_url, {"overall": "A1"})
     _seed_ready_unit(migrated_url, unit_ref=unit_ref, with_chunks=True)
 
-    result = asyncio.run(handle_turn("tutor_unit", database_url=migrated_url))
+    with patch(
+        "app.tutor.teach.fetch_lemma_entries",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        result = asyncio.run(handle_turn("tutor_unit", database_url=migrated_url))
     assert isinstance(result, TurnSuccess)
     assert result.emit_token_delta is True
     assert unit_ref in result.message
+    assert "[CEFR target: A1–A2]" in result.message
     snap = asyncio.run(get_turn_snapshot(database_url=migrated_url))
     assert snap is not None
     assert snap["active_agent"] == "Tutor"
@@ -454,7 +471,12 @@ def test_handle_turn_persist_fail_on_unit_switch_uses_session_persist_fail(
     _seed_profile(migrated_url, {"overall": "A1"})
     _seed_unit(migrated_url, unit_ref=a, content="Alpha")
     _seed_unit(migrated_url, unit_ref=b, content="Beta")
-    first = asyncio.run(handle_turn("tutor_unit", database_url=migrated_url))
+    with patch(
+        "app.tutor.teach.fetch_lemma_entries",
+        new_callable=AsyncMock,
+        return_value=[],
+    ):
+        first = asyncio.run(handle_turn("tutor_unit", database_url=migrated_url))
     assert isinstance(first, TurnSuccess)
 
     with patch(
@@ -551,7 +573,7 @@ def test_grounded_teach_uses_only_chunk_content() -> None:
 
 
 def test_handle_tutor_matrix_unit_mocked() -> None:
-    """Matrix rows Happy / CEFR / no-ready / empty-rag / refuse without integration_db."""
+    """Matrix: Happy / CEFR / no-ready / empty-rag / refuse (no integration_db)."""
     session = AsyncMock()
 
     async def _cefr_gate() -> None:
@@ -645,12 +667,19 @@ def test_handle_tutor_matrix_unit_mocked() -> None:
                 new_callable=AsyncMock,
                 return_value=corpus,
             ),
+            patch(
+                "app.tutor.teach.fetch_lemma_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             out = await handle_tutor(session)
         assert out.emit_token_delta is True
         assert out.session_patch == {"tutor": {"active_unit_ref": unit_ref}}
         assert unit_ref in out.message
         assert "Hello from Ready SB." in out.message
+        assert "[CEFR target: B1–B2]" in out.message
+        assert "Mini-context" not in out.message
         assert out.ctas == ()
 
     async def _null_unit_chrome() -> None:
@@ -839,9 +868,100 @@ def test_unset_request_still_auto_binds() -> None:
                 new_callable=AsyncMock,
                 return_value=corpus,
             ),
+            patch(
+                "app.tutor.teach.fetch_lemma_entries",
+                new_callable=AsyncMock,
+                return_value=[],
+            ),
         ):
             out = await handle_tutor(session, request_unit_ref=UNSET)
         assert out.emit_token_delta is True
         assert unit_ref in out.message
+        assert "[CEFR target: A1–A2]" in out.message
+
+    asyncio.run(_run())
+
+
+def test_mid_session_cefr_clear_reblocks_tutor() -> None:
+    """Gate re-checked every Ready Tutor start after mid-session overall clear."""
+    session = AsyncMock()
+
+    async def _run() -> None:
+        with (
+            patch(
+                "app.tutor.handoff.read_overall_cefr",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch(
+                "app.tutor.handoff.get_ready_unit_chunks",
+                new_callable=AsyncMock,
+            ) as chunks,
+        ):
+            out = await handle_tutor(
+                session,
+                text="tutor_unit",
+                prior_tutor={"active_unit_ref": f"{EF4_BEG_SB_ID}/1A"},
+            )
+        assert out.message == CEFR_MISSING
+        assert out.ctas == CEFR_GATE_CTAS
+        assert out.session_patch == {}
+        assert out.emit_token_delta is False
+        chunks.assert_not_awaited()
+
+    asyncio.run(_run())
+
+
+def test_teach_with_cg_respects_cefr_band() -> None:
+    """CEFR×CG order: mini-context present and labeled with same overall/+1 ceiling."""
+    from app.mixins.context_generator import LexiconEntry
+
+    session = AsyncMock()
+    unit_ref = f"{EF4_BEG_SB_ID}/1A"
+    corpus = ReadyUnitCorpus(
+        unit_ref=unit_ref,
+        status="Ready",
+        chunks=[
+            ReadyChunk(
+                ordinal=0,
+                content="Hello practice.",
+                embedding=[0.0] * 4,
+                model_name="x",
+                dims=4,
+            )
+        ],
+    )
+
+    async def _run() -> None:
+        with (
+            patch(
+                "app.tutor.handoff.read_overall_cefr",
+                new_callable=AsyncMock,
+                return_value="A2",
+            ),
+            patch(
+                "app.tutor.handoff.first_ready_sb_unit_ref",
+                new_callable=AsyncMock,
+                return_value=unit_ref,
+            ),
+            patch(
+                "app.tutor.handoff.get_ready_unit_chunks",
+                new_callable=AsyncMock,
+                return_value=corpus,
+            ),
+            patch(
+                "app.tutor.teach.fetch_lemma_entries",
+                new_callable=AsyncMock,
+                return_value=[
+                    LexiconEntry(lemma="hello", definition="used as a greeting")
+                ],
+            ),
+        ):
+            out = await handle_tutor(session)
+        assert out.emit_token_delta is True
+        assert "[CEFR target: A2–B1]" in out.message
+        assert "≤B1" in out.message
+        assert "hello — used as a greeting" in out.message
+        assert out.message.index("[CEFR target:") < out.message.index("Mini-context")
 
     asyncio.run(_run())
