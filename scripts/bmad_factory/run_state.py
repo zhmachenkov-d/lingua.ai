@@ -163,6 +163,10 @@ def journal_path(project_root: Path, run_id: str) -> Path:
     return run_dir(project_root, run_id) / "journal.jsonl"
 
 
+def run_log_path(project_root: Path, run_id: str) -> Path:
+    return run_dir(project_root, run_id) / "run.log"
+
+
 def new_run_id() -> str:
     stamp = time.strftime("%Y%m%dT%H%M%S")
     return f"{stamp}-{uuid.uuid4().hex[:8]}"

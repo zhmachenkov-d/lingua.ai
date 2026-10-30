@@ -10,7 +10,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 from .constants import (
     AGENT_START_MAX_ATTEMPTS,
@@ -43,6 +43,43 @@ _KIND_LABEL = {
     "status": "status",
     "task": "task",
 }
+
+_run_log_fh: TextIO | None = None
+_run_log_path: Path | None = None
+
+
+def attach_agent_run_log(path: Path) -> None:
+    """Append full agent stream lines to ``path`` (plain text, no ANSI)."""
+    global _run_log_fh, _run_log_path
+    resolved = path.resolve()
+    if _run_log_fh is not None and _run_log_path == resolved:
+        return
+    detach_agent_run_log()
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    _run_log_fh = resolved.open("a", encoding="utf-8")
+    _run_log_path = resolved
+
+
+def detach_agent_run_log() -> None:
+    """Close the agent run.log sink if open."""
+    global _run_log_fh, _run_log_path
+    if _run_log_fh is not None:
+        try:
+            _run_log_fh.close()
+        except OSError:
+            pass
+    _run_log_fh = None
+    _run_log_path = None
+
+
+def _write_run_log(line: str) -> None:
+    if _run_log_fh is None:
+        return
+    try:
+        _run_log_fh.write(line + "\n")
+        _run_log_fh.flush()
+    except OSError:
+        pass
 
 
 @dataclass
@@ -96,7 +133,7 @@ def _format_payload(value: Any) -> str:
         return str(value)
 
 
-def _emit_agent_line(kind: str, text: str) -> None:
+def _emit_agent_line(kind: str, text: str, *, console: bool = True) -> None:
     style = {
         "assistant": "white",
         "thinking": "dim",
@@ -107,17 +144,21 @@ def _emit_agent_line(kind: str, text: str) -> None:
         "task": "blue",
     }.get(kind, "")
     label = _KIND_LABEL.get(kind, (kind or "?")[:6])
-    prefix = _paint("dim", f"agent | {label:<6} |")
+    plain_prefix = f"agent | {label:<6} |"
+    _write_run_log(f"{plain_prefix} {text}")
+    if not console:
+        return
+    prefix = _paint("dim", plain_prefix)
     body = _paint(style, text) if style else text
     print(f"{prefix} {body}", file=sys.stderr, flush=True)
 
 
-def _emit_agent_block(kind: str, text: str) -> None:
+def _emit_agent_block(kind: str, text: str, *, console: bool = True) -> None:
     text = text.replace("\r\n", "\n").replace("\r", "\n").rstrip()
     if not text:
         return
     for line in text.split("\n"):
-        _emit_agent_line(kind, line)
+        _emit_agent_line(kind, line, console=console)
 
 
 def _assistant_text(message: Any) -> str:
@@ -154,14 +195,15 @@ def _emit_agent_message(message: Any) -> None:
         header = name
         if status:
             header = f"{header} [{status}]"
+        # Console: name + status only; full args/result go to run.log.
         _emit_agent_line(kind, header)
         args_text = _format_payload(getattr(message, "args", None))
         if args_text:
-            _emit_agent_block(kind, args_text)
+            _emit_agent_block(kind, args_text, console=False)
         if status in {"completed", "error"}:
             result_text = _format_payload(getattr(message, "result", None))
             if result_text:
-                _emit_agent_block(kind, f"→ {result_text}")
+                _emit_agent_block(kind, f"→ {result_text}", console=False)
         return
     if msg_type == "status":
         status = getattr(message, "status", "") or ""

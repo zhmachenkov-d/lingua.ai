@@ -36,18 +36,55 @@ BRANCH_PREFIX = "factory"
 
 log = logging.getLogger("bmad_factory")
 
+_LOG_FORMAT = "%(asctime)s %(levelname)-5s %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+_RUN_LOG_HANDLER_NAME = "bmad_factory_run_log"
+_run_log_handler: logging.FileHandler | None = None
+
+
+def _log_formatter() -> logging.Formatter:
+    return logging.Formatter(_LOG_FORMAT, _LOG_DATEFMT)
+
 
 def configure_logging(level: str) -> None:
+    detach_run_log()
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter(
-            "%(asctime)s %(levelname)-5s %(message)s", "%Y-%m-%d %H:%M:%S"
-        )
-    )
+    handler.setFormatter(_log_formatter())
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
+
+
+def attach_run_log(path: Path) -> None:
+    """Append factory ``logging`` output to ``path`` (idempotent)."""
+    global _run_log_handler
+    root = logging.getLogger()
+    if _run_log_handler is not None:
+        if Path(getattr(_run_log_handler, "baseFilename", "")) == path.resolve():
+            return
+        detach_run_log()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(path, mode="a", encoding="utf-8")
+    handler.set_name(_RUN_LOG_HANDLER_NAME)
+    handler.setFormatter(_log_formatter())
+    root.addHandler(handler)
+    _run_log_handler = handler
+
+
+def detach_run_log() -> None:
+    """Remove the run FileHandler if attached."""
+    global _run_log_handler
+    root = logging.getLogger()
+    if _run_log_handler is not None:
+        root.removeHandler(_run_log_handler)
+        _run_log_handler.close()
+        _run_log_handler = None
+        return
+    for handler in list(root.handlers):
+        if getattr(handler, "name", None) == _RUN_LOG_HANDLER_NAME:
+            root.removeHandler(handler)
+            handler.close()
 
 
 class FactoryHalt(Exception):
