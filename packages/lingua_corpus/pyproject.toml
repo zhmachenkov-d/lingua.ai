@@ -19,3 +19,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["lingua_corpus*"]
+
+[tool.setuptools.package-data]
+lingua_corpus = ["py.typed"]

@@ -112,3 +112,51 @@ jobs:
           cache-dependency-path: apps/web/package-lock.json
       - run: npm ci
       - run: npm test
+
+  quality-ast:
+    name: AST quality gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install quality tools (pinned)
+        # Versions: scripts/quality/versions.env
+        #   AST_GREP_VERSION=0.51.0
+        #   AST_METRICS_VERSION=v0.43.1
+        #   REVET_VERSION=v0.2.8
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          bash scripts/quality/install_tools.sh
+      - name: Resolve base ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=${{ github.event.pull_request.base.sha }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=origin/main" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run quality gate
+        env:
+          QUALITY_PR: ${{ github.event.pull_request.number }}
+        run: |
+          python scripts/quality_gate.py --base "${{ steps.base.outputs.ref }}"
+      - name: Absolute metrics snapshot (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          mkdir -p _bmad-output/quality/runs/main-snapshot
+          ast-metrics analyze \
+            --report-json=_bmad-output/quality/runs/main-snapshot/ast-metrics-analyze.json \
+            .
+      - name: Upload quality artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-ast-${{ github.run_id }}
+          path: _bmad-output/quality/
+          retention-days: 30
+          if-no-files-found: ignore

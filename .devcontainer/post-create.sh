@@ -19,4 +19,10 @@ agent --version
 # https://docs.graphify.com/installation
 # https://docs.graphify.com/integrations/cursor
 
+# AST quality gate binaries (ast-grep / ast-metrics / revet) — pinned in
+# scripts/quality/versions.env; same installer CI uses.
+echo "==> Installing AST quality tools"
+bash scripts/quality/install_tools.sh
+export PATH="${HOME}/.local/bin:${PATH}"
+
 echo "==> Dev container ready"

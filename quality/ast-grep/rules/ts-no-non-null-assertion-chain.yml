@@ -1,0 +1,10 @@
+id: ts-no-non-null-assertion-chain
+language: TypeScript
+severity: warning
+message: Chained non-null assertions hide nullability; narrow explicitly.
+files:
+  - "apps/web/**/*.ts"
+ignores:
+  - "**/*.spec.ts"
+rule:
+  pattern: $A!.$B!

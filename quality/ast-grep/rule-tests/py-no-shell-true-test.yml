@@ -1,0 +1,7 @@
+id: py-no-shell-true
+valid:
+  - "subprocess.run(['ls', '-la'], check=True)"
+  - "subprocess.Popen(['echo', 'hi'])"
+invalid:
+  - "subprocess.run('ls -la', shell=True)"
+  - "subprocess.check_output(cmd, shell=True)"

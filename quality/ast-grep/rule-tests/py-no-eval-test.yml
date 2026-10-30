@@ -1,0 +1,7 @@
+id: py-no-eval
+valid:
+  - "result = evaluate(expr)"
+  - "x = safe_eval(s)"
+invalid:
+  - "x = eval(user_input)"
+  - "eval('1+1')"

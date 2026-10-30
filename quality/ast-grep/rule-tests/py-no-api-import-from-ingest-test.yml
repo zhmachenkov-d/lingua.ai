@@ -1,0 +1,7 @@
+id: py-no-api-import-from-ingest
+valid:
+  - "from lingua_ids import EF4_BEG_SB_ID"
+  - "from app.persist import store"
+invalid:
+  - "from apps.api.app.models import Textbook"
+  - "import apps.api"

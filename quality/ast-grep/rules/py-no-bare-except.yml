@@ -1,0 +1,17 @@
+id: py-no-bare-except
+language: Python
+severity: error
+message: Bare except catches BaseException; name the exception type(s).
+note: Prefer `except Exception:` or a specific type so KeyboardInterrupt and SystemExit are not swallowed.
+files:
+  - "apps/**/*.py"
+  - "packages/**/*.py"
+  - "scripts/**/*.py"
+ignores:
+  - "**/tests/**"
+  - "**/*_test.py"
+rule:
+  kind: except_clause
+  pattern: |
+    except:
+        $$$BODY

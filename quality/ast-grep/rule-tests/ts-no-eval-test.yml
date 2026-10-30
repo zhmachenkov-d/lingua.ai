@@ -1,0 +1,7 @@
+id: ts-no-eval
+valid:
+  - "const n = Number(raw);"
+  - "evaluate(expression);"
+invalid:
+  - "eval(code);"
+  - "const x = eval('1+1');"
